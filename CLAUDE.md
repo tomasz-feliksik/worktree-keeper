@@ -1,13 +1,13 @@
 # worktree-keeper
 
-A Rust CLI (binary `worktree`) that makes agent git worktrees safe to create, inspect and remove. **The commands are a
-skeleton so far**: each one exits 3. The working implementation is the frozen Bash tool in `reference/bash/`.
+A Rust CLI (binary `worktree`) that makes agent git worktrees safe to create, inspect and remove. **Every command is
+implemented, but production still runs** the frozen Bash tool in `reference/bash/` until cutover.
 
 ## Start here
 
 1. `bd ready` for what can be done next. The work is in two epics: `worktree-keeper-elj` and `worktree-keeper-6fl`.
 1. `docs/project-overview.md` for what this is, the agreed scope and every decision. Read it before proposing features.
-1. `docs/porting-guide.md` before porting any command. It has what the code cannot tell you: callers, Git facts and
+1. `docs/porting-guide.md` before changing any command. It has what the code cannot tell you: callers, Git facts and
    the guarantee table.
 1. `docs/setup.md` for the repository and Nix structure.
 
@@ -16,7 +16,7 @@ skeleton so far**: each one exits 3. The working implementation is the frozen Ba
 ```bash
 nix develop --command just fmt       # format
 nix develop --command just check     # lint and test: the CI entry point
-nix develop --command just parity    # black-box suite; fails until the port is complete
+nix develop --command just parity    # black-box suite; part of just check
 nix flake check                      # builds, Clippy, formatting, Home Manager module
 ```
 

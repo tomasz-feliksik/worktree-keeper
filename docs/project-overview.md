@@ -3,12 +3,12 @@
 **worktree-keeper makes agent git worktrees safe to create, inspect and remove.** It is a small Rust command-line tool
 that wraps the worktree lifecycle and refuses to delete anything it cannot prove is disposable.
 
-|            |                                                                             |
-| ---------- | --------------------------------------------------------------------------- |
-| Repository | `tomasz-feliksik/worktree-keeper` on GitHub, private for now                |
-| Crate      | `worktree-keeper`                                                           |
-| Binary     | `worktree`                                                                  |
-| Status     | Skeleton. The working implementation is still the Bash tool in `ai-harness` |
+|            |                                                                        |
+| ---------- | ---------------------------------------------------------------------- |
+| Repository | `tomasz-feliksik/worktree-keeper` on GitHub, private for now           |
+| Crate      | `worktree-keeper`                                                      |
+| Binary     | `worktree`                                                             |
+| Status     | Ported and tested. Production still runs the Bash tool in `ai-harness` |
 
 This document records what the project is and what has been agreed. How to create the repository and its Nix structure
 is in [`setup.md`](./setup.md). How to do the port is in [`porting-guide.md`](./porting-guide.md).
@@ -88,19 +88,19 @@ supervise agents (workmux and herdr today), rather than competing with them.
 
 ## Command interface
 
-This is the agreed shape, not final syntax. `+` marks a new command. The main design choice is separating questions from
-actions: today `guard` does both, which is why you cannot ask whether removal is safe without changing anything.
+`+` marks a command the Bash tool does not have. The main design choice is separating questions from actions: today
+`guard` does both, which is why you cannot ask whether removal is safe without changing anything.
 
 ```text
 # Questions: never change anything
 worktree status [--json] [path]     + every worktree and its state
-worktree check [--json] <path>      + may it be removed, and if not, why?
+worktree check [--json] [--force] [--ignore-in-use] <path>      + may it be removed, and if not, why?
 worktree actor [dir]
 
 # Lifecycle
 worktree create <branch> [base]
 worktree provision [path]
-worktree remove [--force] [--keep-branch] [--delete-remote] <path>
+worktree remove [--force] [--ignore-in-use] [--keep-branch] [--delete-remote] <path>
 worktree lock [--reason <text>] [path]     + mark as occupied
 worktree unlock [path]                     + release it
 
@@ -108,7 +108,7 @@ worktree unlock [path]                     + release it
 worktree sweep [--apply] [--repo <path>]... [<root>...]
 
 # For hooks (workmux pre_remove)
-worktree guard [--force] [path]     check, then clear metadata
+worktree guard [--force] [--ignore-in-use] [path]     check, then clear metadata
 ```
 
 `--json` is the agent interface: agents act on a verdict instead of parsing Git output.
@@ -128,19 +128,19 @@ worktree guard [--force] [path]     check, then clear metadata
    main checkout's submodules.
 1. **A remote branch is deleted last, and only on request.**
 
-## Known defects to fix
+## Defects fixed since the Bash tool
 
-Both were found by reading the Bash tool. They should be fixed after parity, so each is a visible, separately tested
-change.
+The port first matched Bash, then fixed each of these as its own commit with a regression test. The
+[porting guide](./porting-guide.md#intended-differences-from-bash) lists them beside the other intended differences.
 
-- **Slug collision.** `feat/x` and `feat-x` both become the slug `feat-x`. If that path exists, `create` exits 0 and
-  prints it without checking its branch, so an agent could end up working on the wrong branch.
-- **Partial removal.** On an unmerged branch, `remove` deletes the worktree first, then exits 1 when `git branch -d`
-  refuses. Nothing is lost because the branch stays, but "refused" means the worktree is already gone. The branch should
-  be checked first.
-
-The intended differences from Bash, such as `--help` exiting 0, are listed in the
-[porting guide](./porting-guide.md#intended-differences-from-bash).
+- **Slug collision.** `feat/x` and `feat-x` both become the slug `feat-x`, and `create` used to hand back whichever was
+  there. It now refuses a path on another branch.
+- **Partial removal.** `remove` used to delete the worktree, then refuse on an unmerged branch. It now checks first.
+- **Repository-wide prune.** `remove` used to run `git worktree prune`, which deleted the clones of **other** stale
+  registrations unchecked, unpushed commits included. Found during the port. This is real data loss, and the Bash tool
+  has it until cutover.
+- **`provision` failing its caller.** A failed `direnv allow` used to fail workmux's fail-fast hook, leaving a
+  half-created worktree.
 
 ## Technical decisions
 
@@ -173,8 +173,26 @@ The intended differences from Bash, such as `--help` exiting 0, are listed in th
 
 ### In-use detection
 
-This needs separate code per platform: reading `/proc/<pid>/cwd` on Linux, and `lsof` on macOS. If it cannot run, it
-exits 3 rather than guessing. This is planned and has not been prototyped.
+It reads `/proc/<pid>/cwd` on Linux, and runs `lsof` on macOS, whose path has not been run yet. If it cannot run, it
+exits 3 rather than guessing. A process inside the worktree refuses removal, `--force` does not override that, and
+`--ignore-in-use` does. The measurements, and what they mean for callers, are in the
+[porting guide](./porting-guide.md#in-use-detection).
+
+### Locking
+
+`worktree lock` uses `git worktree lock`, and a lock refuses removal under `--force` too, naming its reason. `create`
+does not lock on its own: a crashed agent would leave a lock nothing releases, and the in-use check already protects a
+running agent without any cleanup.
+
+### Seed files
+
+A repository lists the gitignored files a new worktree needs in a committed `.worktreeinclude`, in gitignore syntax, and
+`provision` copies them. The list is read from the main checkout's HEAD, so a branch cannot widen what it receives. A
+file must be both listed and ignored. It is never overwritten, it keeps its mode, and a failure warns.
+
+### JSON
+
+`status --json` and `check --json` are specified in [`json-schema.md`](./json-schema.md).
 
 ## How it fits with ai-harness
 
@@ -201,7 +219,7 @@ below are unconfirmed by a real test.
 | Sets up submodules on create          | Yes                                      | No built-in step found                 | No built-in step found                  | Not mentioned                       |
 | Refuses on dirty files                | Yes, including submodules                | Yes, including submodules since 0.80   | Yes                                     | Yes, unless forced                  |
 | Refuses on unpushed submodule commits | Yes, tested                              | No general check found                 | No check found                          | No check found                      |
-| Detects a worktree in use             | Planned                                  | Not checked                            | Yes, by scanning processes              | Not checked                         |
+| Detects a worktree in use             | Yes                                      | Not checked                            | Yes, by scanning processes              | Not checked                         |
 
 Worktrunk's PR #4252 fixed silent data loss in `wt remove` caused by submodule ignore settings. It still forces removal
 whenever submodules are initialised, and from its source, its dirty check would not see a clean submodule whose commit
@@ -215,11 +233,11 @@ Links: [Worktrunk](https://github.com/max-sixty/worktrunk), [Treehouse](https://
 1. **Foundation docs.** Done.
 1. **Skeleton.** Flake, dev shell, CI and the CLI surface. Done.
 1. **Parity.** Port the six commands until the black-box suite passes, with each intentional difference written down.
-   Bash stays in production.
+   Bash stays in production. Done.
 1. **Cutover.** Add the input to `ai-harness`, turn its module into the adapter, and delete the Bash tool only once its
    unit checks and a real deployment are green.
 1. **Fixes and features.** The known defects, read-only check, status with `--json`, in-use detection, occupancy lock,
-   then local file seeding.
+   then local file seeding. Done, ahead of cutover.
 1. **Later.** Merge detection.
 
 This order is carried by bead priorities, with the port and cutover first. Bead dependencies record only real
@@ -227,10 +245,9 @@ constraints, so a fix can land before cutover if there is a reason to.
 
 ## Open questions
 
-Each one is a `decision` bead, so `bd list --type=decision` shows the current state:
+Each one is a `decision` bead, so `bd list --type=decision` shows the current state. The JSON schema, automatic locking
+and seed files were decided on 2026-11-05 as reversible defaults, and await the owner's review while nothing depends on
+them yet:
 
 1. How does `ai-harness` fetch this repository while it is private? This blocks cutover.
 1. When does it go public, and under which licence?
-1. What does `--json` look like, and how is it versioned?
-1. Does `create` lock the worktree automatically?
-1. How are seed files declared?
