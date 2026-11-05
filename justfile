@@ -49,8 +49,9 @@ parity-bash *tests:
     WORKTREE="$PWD/target/worktree-bash" bash tests/parity/test.sh {{tests}}
 
 # Judged by the parity suite too, through tests/parity.rs. Read `unviable` as "not
-# tested", never as a pass.
+# tested", never as a pass. The excluded functions are macOS-only: Linux never compiles
+# them, so their mutants could only ever read as missed. Use --in-diff for a quick pass.
 mutants *args:
-    cargo mutants --timeout 300 {{args}} -- -- --include-ignored
+    cargo mutants --jobs 8 --timeout 60 --exclude-re 'scan_lsof|own_chain_by_ps' {{args}} -- -- --include-ignored
 
 check: lint test parity

@@ -77,10 +77,18 @@ fn scan_proc(proc: &Path, worktree: &Path) -> Result<Vec<Holder>, CannotTell> {
 }
 
 #[cfg(target_os = "linux")]
+const MAX_ANCESTORS: usize = 1024;
+
+#[cfg(target_os = "linux")]
 fn own_chain(proc: &Path) -> Vec<u32> {
     let mut chain = Vec::new();
     let mut at = String::from("self");
-    while let Ok(stat) = fs::read_to_string(proc.join(&at).join("stat")) {
+    // Bounded, so that a /proc that lies cannot hang a hook. Stopping early only ever
+    // leaves an ancestor to be reported as a holder, which refuses: the safe direction.
+    for _ in 0..MAX_ANCESTORS {
+        let Ok(stat) = fs::read_to_string(proc.join(&at).join("stat")) else {
+            break;
+        };
         let Some((pid, parent)) = pid_and_parent(&stat) else {
             break;
         };

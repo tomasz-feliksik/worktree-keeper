@@ -576,7 +576,7 @@ t_check_agrees_with_guard() {
 t_in_use_refuses_and_names_the_process() {
   make_project
   make_worktree busy
-  (cd "$WT" && exec sleep 300) &
+  (cd "$WT" && exec sleep 300) >/dev/null 2>&1 &
   local holder=$!
   local sub
   for sub in check guard; do
@@ -1062,13 +1062,43 @@ t_help_never_acts() {
 
 # --- runner -------------------------------------------------------------------
 
+# Tests run side by side, each with its own scratch directory, and report in order. A test
+# that dies before writing its count is a failure too, not a silent gap.
+run_one() {
+  current=$1
+  SCRATCH=$SCRATCH/run-$1
+  mkdir -p "$SCRATCH"
+  failures=0
+  "t_$1"
+  echo "$failures" >"$results/$1.count"
+}
+
+results=$SCRATCH/results
+mkdir -p "$results"
 all=$(declare -F | awk '{print $3}' | grep '^t_' | sed 's/^t_//')
 selected=${*:-$all}
+limit=${PARITY_JOBS:-8}
+running=0
 for name in $selected; do
-  current=$name
-  before=$failures
-  "t_$name"
-  if [[ $failures -eq $before ]]; then echo "ok   $name"; else echo "FAIL $name"; fi
+  if [[ $running -ge $limit ]]; then
+    wait -n
+    running=$((running - 1))
+  fi
+  (run_one "$name") >"$results/$name.out" 2>"$results/$name.err" &
+  running=$((running + 1))
+done
+wait
+
+for name in $selected; do
+  cat "$results/$name.out"
+  cat "$results/$name.err" >&2
+  count=$(cat "$results/$name.count" 2>/dev/null) || count=""
+  if [[ -z $count ]]; then
+    echo "  FAIL [$name]: the test died before it finished" >&2
+    count=1
+  fi
+  failures=$((failures + count))
+  if [[ $count -eq 0 ]]; then echo "ok   $name"; else echo "FAIL $name"; fi
 done
 echo "$failures failure(s)"
 [[ $failures -eq 0 ]]
