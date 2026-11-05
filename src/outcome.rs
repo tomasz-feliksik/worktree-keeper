@@ -30,12 +30,19 @@ impl fmt::Display for CannotTell {
     }
 }
 
+/// Why the answer was no, for an agent to act on without parsing prose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusalKind {
+    Other,
+    UnmergedBranch,
+}
+
 /// Why a command stopped short of success.
 #[derive(Debug, PartialEq, Eq)]
 #[must_use]
 pub enum Stop {
     /// Exit 1: the tool looked, and the answer is no.
-    Refused(String),
+    Refused { kind: RefusalKind, message: String },
     /// Exit 2: the command line itself was wrong.
     Usage(String),
     /// Exit 3: the tool could not look.
@@ -44,12 +51,19 @@ pub enum Stop {
 
 impl Stop {
     pub fn refused(reason: impl fmt::Display) -> Self {
-        Self::Refused(format!("worktree: {reason}"))
+        Self::refused_as(RefusalKind::Other, reason)
+    }
+
+    pub fn refused_as(kind: RefusalKind, reason: impl fmt::Display) -> Self {
+        Self::Refused {
+            kind,
+            message: format!("worktree: {reason}"),
+        }
     }
 
     pub fn status(&self) -> u8 {
         match self {
-            Self::Refused(_) => 1,
+            Self::Refused { .. } => 1,
             Self::Usage(_) => 2,
             Self::CannotTell(_) => 3,
         }
@@ -65,7 +79,7 @@ impl From<CannotTell> for Stop {
 impl fmt::Display for Stop {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Refused(message) | Self::Usage(message) => f.write_str(message),
+            Self::Refused { message, .. } | Self::Usage(message) => f.write_str(message),
             Self::CannotTell(cannot_tell) => cannot_tell.fmt(f),
         }
     }

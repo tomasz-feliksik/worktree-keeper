@@ -251,6 +251,43 @@ t_remove_branch_disposition() {
     fail "unmerged branch was deleted without --force"
 }
 
+# "Refused" means nothing happened. The unmerged branch is found before anything is
+# deleted: the worktree and its submodule stay. --keep-branch and --force skip it.
+t_unmerged_refusal_changes_nothing() {
+  make_project
+  make_worktree half
+  echo change >>"$WT/README"
+  git -C "$WT" commit -q -am "unmerged work"
+  run remove "$WT"
+  expect_rc 1
+  expect_err "not merged"
+  [[ -f $WT/README ]] || fail "the worktree was removed before refusing"
+  [[ -e $WT/sub/README ]] || fail "the submodule was emptied before refusing"
+  [[ -d $WTGIT/modules ]] || fail "the submodule clones were cleared before refusing"
+  [[ $(git -C "$WT" branch --show-current) == half ]] || fail "the worktree was detached before refusing"
+
+  # git's own rule: merged into the upstream counts, although HEAD lacks it.
+  git -C "$WT" push -q -u origin half 2>/dev/null
+  run remove --keep-branch "$WT"
+  expect_rc 0
+  git -C "$T/project" show-ref --verify --quiet refs/heads/half || fail "--keep-branch deleted the branch"
+
+  make_worktree pushed
+  echo change >>"$WT/README"
+  git -C "$WT" commit -q -am "pushed, not merged locally"
+  git -C "$WT" push -q -u origin pushed 2>/dev/null
+  run remove "$WT"
+  expect_rc 0
+  [[ ! -e $WT ]] || fail "a branch merged into its upstream was refused"
+
+  make_worktree discarded
+  echo change >>"$WT/README"
+  git -C "$WT" commit -q -am "to discard"
+  run remove --force "$WT"
+  expect_rc 0
+  git -C "$T/project" show-ref --verify --quiet refs/heads/discarded && fail "--force kept the branch"
+}
+
 # The remote branch goes last and only on request: kept when the local deletion
 # refuses, kept without --delete-remote, deleted with it, from the branch's own
 # remote rather than always from origin.

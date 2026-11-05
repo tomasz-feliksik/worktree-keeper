@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::guard::{self, OwnChanges};
 use crate::git::{Git, shown, trimmed};
-use crate::outcome::{CannotTell, Outcome, Stop};
+use crate::outcome::{CannotTell, Outcome, RefusalKind, Stop};
 use crate::say::{Sink, say};
 use crate::worktree::LinkedWorktree;
 
@@ -23,6 +23,10 @@ pub enum BranchFate {
 }
 
 pub fn run(path: &Path, own_changes: OwnChanges, fate: BranchFate) -> Outcome {
+    // Before the guard, which empties submodules: "refused" must mean nothing happened.
+    if own_changes == OwnChanges::MustBeClean && fate != BranchFate::Keep {
+        refuse_unmerged_branch(&LinkedWorktree::resolve(path)?)?;
+    }
     guard::run(Some(path.to_path_buf()), own_changes)?;
     let worktree = LinkedWorktree::resolve(path)?;
     let wt = &worktree.path;
@@ -73,6 +77,47 @@ pub fn run(path: &Path, own_changes: OwnChanges, fate: BranchFate) -> Outcome {
         delete_remote_branch(main, &remote, &branch)?;
     }
     Ok(())
+}
+
+/// Refuses now what `git branch -d` would refuse after the worktree is gone. It has to
+/// ask git's own question: merged into the branch's upstream if it has one, or else
+/// into the HEAD of the checkout that runs the deletion.
+fn refuse_unmerged_branch(worktree: &LinkedWorktree) -> Outcome {
+    let (wt, main) = (&worktree.path, &worktree.main_checkout);
+    let branch = shown(&Git::at(wt, ["branch", "--show-current"]).probe(wt)?);
+    if branch.is_empty() {
+        return Ok(());
+    }
+    let upstream = format!("{branch}@{{upstream}}");
+    let has_upstream = Git::at(
+        main,
+        ["rev-parse", "--verify", "--quiet", upstream.as_str()],
+    )
+    .succeeds(main)?;
+    let target = if has_upstream {
+        upstream.as_str()
+    } else {
+        "HEAD"
+    };
+    match Git::at(
+        main,
+        ["merge-base", "--is-ancestor", branch.as_str(), target],
+    )
+    .exit_code(main)?
+    {
+        Some(0) => Ok(()),
+        Some(1) => Err(Stop::refused_as(
+            RefusalKind::UnmergedBranch,
+            format!(
+                "branch {branch} is not merged into {target}, so nothing was removed — merge it, keep it with --keep-branch, or discard it with --force"
+            ),
+        )),
+        _ => Err(CannotTell::new(format!(
+            "worktree: cannot inspect {}: git merge-base could not compare {branch} with {target}",
+            main.display()
+        ))
+        .into()),
+    }
 }
 
 fn upstream_remote(main: &Path, branch: &str) -> Result<String, CannotTell> {
