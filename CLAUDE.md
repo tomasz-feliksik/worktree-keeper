@@ -1,6 +1,20 @@
-# Project Instructions for AI Agents
+# worktree-keeper
 
-This file provides instructions and context for AI coding agents working on this project.
+A Rust CLI (binary `worktree`) that makes agent git worktrees safe to create, inspect and remove. **Documentation only so
+far**; there is no Rust or Nix code yet.
+
+- What it is, the agreed scope and every decision: `docs/project-overview.md`. Read it before proposing features.
+- Repository and Nix structure: `docs/setup.md`.
+- Tracking is `bd`, in this repository.
+
+Rules specific to this repository:
+
+- **The safety guarantees in `docs/project-overview.md` are the product.** Never weaken one to make a test or a workflow
+  easier.
+- **No `nix-lib`.** It is private, and this flake has to build for others if the repository goes public. This is a
+  deliberate exception to the usual project setup.
+- **Keep it independent of its consumers.** No knowledge of `bd`, workmux, herdr or `ai-harness` belongs in the tool.
+- **Docs stay publishable:** no private paths or another repository's bead ids.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:cdcea925 -->
 ## Beads Issue Tracker
