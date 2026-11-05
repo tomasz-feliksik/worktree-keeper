@@ -1,7 +1,7 @@
 //! Leftovers of removed worktrees, found, and deleted only with `--apply`. No timer
 //! runs this: an unattended delete is a new way to lose data.
 //!
-//! Under each placement root, a directory at depth 1 or 2 is one of:
+//! Under each directory swept, a directory at depth 1 or 2 is one of:
 //!
 //! - **live**: a registered worktree, whose `.git` file points at a git directory that
 //!   points back. Untouched, and so is everything above it.
@@ -11,12 +11,11 @@
 //! - **other**: anything else, such as ignored files a removal left behind, or an
 //!   empty shell. A leftover, deleted by `--apply`.
 //!
-//! And per repository (`--repo`, or every repository a live worktree under a root
+//! And per repository (`--repo`, or every repository a live worktree found
 //! belongs to, or the one you are in): registrations whose worktree directory is gone.
 //! `git worktree prune` would delete their git directories, and with them any
 //! submodule clone inside, so their clones are checked for unpushed commits first.
 
-use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -26,6 +25,7 @@ use std::path::{Path, PathBuf};
 use crate::git::{Git, trimmed_path};
 use crate::outcome::{CannotTell, Outcome, Stop};
 use crate::paths::{self, ResolvedPath, cannot_read};
+use crate::placement;
 use crate::say::{Sink, say};
 use crate::submodules;
 use crate::worktree::parent_of;
@@ -48,7 +48,7 @@ enum Kind {
     Other,
 }
 
-/// What a placement root holds.
+/// What a surveyed directory holds.
 #[derive(Debug, Default)]
 pub struct Found {
     pub live: Vec<PathBuf>,
@@ -57,7 +57,7 @@ pub struct Found {
     repos: Vec<PathBuf>,
 }
 
-/// Classifies what is under one canonical placement root, changing nothing.
+/// Classifies what is under one canonical directory, changing nothing.
 pub fn survey(root: &Path) -> Result<Found, CannotTell> {
     let mut found = Found::default();
     survey_root(root, &mut found)?;
@@ -66,7 +66,7 @@ pub fn survey(root: &Path) -> Result<Found, CannotTell> {
 
 pub fn run(mode: Mode, repos: Vec<PathBuf>, roots: Vec<PathBuf>) -> Outcome {
     let roots = if roots.is_empty() {
-        vec![default_root()?]
+        vec![placement::dir_for(&placement::common_here()?)?]
     } else {
         roots
     };
@@ -135,6 +135,15 @@ pub fn run(mode: Mode, repos: Vec<PathBuf>, roots: Vec<PathBuf>) -> Outcome {
         }
     }
 
+    if mode == Mode::Apply {
+        for root in roots
+            .iter()
+            .filter(|root| placement::is_worktrees_dir(root))
+        {
+            placement::remove_if_empty(root, Sink::Stdout);
+        }
+    }
+
     if mode == Mode::DryRun {
         say(
             Sink::Stdout,
@@ -142,13 +151,6 @@ pub fn run(mode: Mode, repos: Vec<PathBuf>, roots: Vec<PathBuf>) -> Outcome {
         );
     }
     Ok(())
-}
-
-fn default_root() -> Outcome<PathBuf> {
-    env::var_os("WORKTREE_ROOT")
-        .filter(|root| !root.is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(|| Stop::refused("sweep: no placement root given and WORKTREE_ROOT is unset"))
 }
 
 /// Depth 1 is a group (`<root>/<repo>`) or, in a flat layout, a worktree. A group

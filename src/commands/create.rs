@@ -1,15 +1,14 @@
-//! Adds `<root>/<repo>/<slug>`, then provisions it. Its callers read stdout as the
+//! Adds `<parent>/<repo>.worktrees/<slug>`, then provisions it. Its callers read stdout as the
 //! path and nothing else, so git's output and every message go to stderr.
 
-use std::env;
 use std::ffi::OsString;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::commands::provision;
 use crate::git::{Git, shown, trimmed_path};
-use crate::outcome::{CannotTell, Outcome, Stop};
+use crate::outcome::{Outcome, Stop};
 use crate::paths::{self, cannot_read};
+use crate::placement;
 use crate::say::{Sink, print_path, say};
 use crate::worktree::parent_of;
 
@@ -19,15 +18,10 @@ pub fn run(branch: &str, base: Option<&str>) -> Outcome {
             "worktree: create: the branch name is empty".to_owned(),
         ));
     }
-    let root = placement_root()?;
-    let repo = repository_root()?;
-    let name = repo.file_name().ok_or_else(|| {
-        CannotTell::new(format!(
-            "worktree: {} has no directory name",
-            repo.display()
-        ))
-    })?;
-    let path = root.join(name).join(slug_of(branch));
+    let common = placement::common_here()?;
+    let dir = placement::dir_for(&common)?;
+    let repo = parent_of(&common)?;
+    let path = dir.join(slug_of(branch));
 
     if paths::exists(&path)? {
         check_existing(&path, branch)?;
@@ -37,6 +31,7 @@ pub fn run(branch: &str, base: Option<&str>) -> Outcome {
         );
     } else {
         add(&repo, &path, branch, base.unwrap_or("HEAD"))?;
+        note_unless_relative(&repo, &dir);
         provision::run(&path, Sink::Stderr)?;
     }
     print_path(&path)
@@ -71,28 +66,32 @@ fn check_existing(path: &Path, branch: &str) -> Outcome {
     )))
 }
 
-fn placement_root() -> Outcome<PathBuf> {
-    env::var_os("WORKTREE_ROOT")
-        .filter(|root| !root.is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            Stop::refused("no placement root: set WORKTREE_ROOT (worktreeKeeper.root sets it for the installed command)")
-        })
-}
-
-/// The directory holding the shared git directory of the repository we are in.
-fn repository_root() -> Outcome<PathBuf> {
-    let common = Git::new(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .answer(Path::new("."))?
-        .ok_or_else(|| Stop::refused("not inside a git repository"))?;
-    Ok(parent_of(&trimmed_path(common))?)
+/// Absolute links break when the repository and its worktrees move together. Only ever
+/// a note: the worktree exists by now, and the caller is waiting for its path.
+fn note_unless_relative(repo: &Path, dir: &Path) {
+    let setting = Git::at(
+        repo,
+        [
+            "config",
+            "--type=bool",
+            "--get",
+            "worktree.useRelativePaths",
+        ],
+    )
+    .answer(repo);
+    if !matches!(setting, Ok(Some(value)) if value.trim_ascii() == b"true") {
+        say(
+            Sink::Stderr,
+            format_args!(
+                "note: worktree.useRelativePaths is not true, so moving {} and {} together breaks this worktree's links until 'git worktree repair'. 'git config --global worktree.useRelativePaths true' avoids that for new worktrees",
+                repo.display(),
+                dir.display()
+            ),
+        );
+    }
 }
 
 fn add(repo: &Path, path: &Path, branch: &str, base: &str) -> Outcome {
-    let parent = parent_of(path)?;
-    fs::create_dir_all(&parent)
-        .map_err(|error| Stop::refused(format!("cannot create {}: {error}", parent.display())))?;
-
     let reference = format!("refs/heads/{branch}");
     let exists = Git::at(
         repo,

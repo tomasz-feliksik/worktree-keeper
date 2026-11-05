@@ -1,8 +1,7 @@
-//! `status`: every worktree under the placement root, and whether it could be removed.
+//! `status`: a repository's worktrees, or a directory's, and whether each could be removed.
 //! Changes nothing. Anything that could not be read is `null` in the JSON and makes the
 //! verdict `unknown`, never `removable`. See docs/json-schema.md.
 
-use std::env;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -15,9 +14,10 @@ use crate::git::{Git, shown};
 use crate::in_use::{self, Holder};
 use crate::outcome::{CannotTell, Outcome, Stop};
 use crate::paths::{self, cannot_read};
+use crate::placement;
 use crate::say;
 use crate::submodules;
-use crate::worktree::LinkedWorktree;
+use crate::worktree::{LinkedWorktree, parent_of};
 
 /// The rules `worktree remove` applies with no options.
 const PLAIN_REMOVE: Rules = Rules {
@@ -82,33 +82,37 @@ pub fn run(path: Option<PathBuf>, format: Format) -> Outcome {
     Ok(())
 }
 
-/// A path that is a worktree shows only it; any other directory is a placement root.
+/// A path that is a worktree shows only it, and any other directory is surveyed. With no
+/// path: this repository's worktrees, wherever they live, and any orphans beside them.
 fn rows_for(path: Option<PathBuf>) -> Outcome<Vec<Row>> {
-    let root = match path {
-        Some(path) => {
-            if paths::exists(&path.join(".git"))? {
-                return Ok(vec![row_for_live(&path)]);
-            }
-            path
-        }
-        None => env::var_os("WORKTREE_ROOT")
-            .filter(|root| !root.is_empty())
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                Stop::refused("status: no placement root given and WORKTREE_ROOT is unset")
-            })?,
+    let Some(path) = path else {
+        let common = placement::common_here()?;
+        let found = survey_if_present(&placement::dir_for(&common)?)?;
+        let live = placement::linked_worktrees(&parent_of(&common)?)?;
+        return Ok(rows_of(&live, &found.orphans));
     };
-    if !paths::is_dir(&root)? {
-        return Ok(Vec::new());
+    if paths::exists(&path.join(".git"))? {
+        return Ok(vec![row_for_live(&path)]);
     }
-    let root = root
+    let found = survey_if_present(&path)?;
+    Ok(rows_of(&found.live, &found.orphans))
+}
+
+fn survey_if_present(dir: &Path) -> Outcome<sweep::Found> {
+    if !paths::is_dir(dir)? {
+        return Ok(sweep::Found::default());
+    }
+    let dir = dir
         .canonicalize()
-        .map_err(|error| cannot_read(&root, &error))?;
-    let found = sweep::survey(&root)?;
-    let mut rows: Vec<Row> = found.live.iter().map(|path| row_for_live(path)).collect();
-    rows.extend(found.orphans.iter().map(|path| row_for_orphan(path)));
+        .map_err(|error| cannot_read(dir, &error))?;
+    Ok(sweep::survey(&dir)?)
+}
+
+fn rows_of(live: &[PathBuf], orphans: &[PathBuf]) -> Vec<Row> {
+    let mut rows: Vec<Row> = live.iter().map(|path| row_for_live(path)).collect();
+    rows.extend(orphans.iter().map(|path| row_for_orphan(path)));
     rows.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(rows)
+    rows
 }
 
 fn row_for_orphan(path: &Path) -> Row {
