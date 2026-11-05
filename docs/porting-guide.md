@@ -28,6 +28,15 @@ nix develop --command just parity sweep actor         # by name, without the t_ 
 It builds the debug binary, then runs the suite against it. It uses scratch repositories with local bare remotes, so it
 works offline. `just check` runs it, and CI has its own step for it.
 
+`nix flake check` also runs it as `checks.<system>.parity`, in the Nix sandbox, against the wrapped package instead of
+the debug binary. That is the only place the package itself gets tested. It then runs `provision` with nothing on
+`PATH`, to prove the wrapper supplies `git` and `direnv`. Because the wrapper comes first on `PATH`, a test cannot fake
+either program there: make the real one fail instead, as `t_provision_never_fails_its_caller` does.
+
+Mutation testing stays out of the sandbox: it needs hundreds of incremental builds, and its survivors are read rather
+than gated on. It runs broken builds of a tool that deletes things as your own user, so `tests/parity/test.sh` keeps
+every path inside its scratch directory and clears `WORKTREE_ROOT`.
+
 `just parity-bash` runs the same suite against the frozen Bash tool, to see what the original does. It fails by design:
 on `t_help_never_acts`, on every defect fixed below, and on every test of a command Bash does not have.
 

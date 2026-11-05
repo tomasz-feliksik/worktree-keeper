@@ -13,6 +13,8 @@ SCRATCH=$(mktemp -d)
 trap 'rm -rf "$SCRATCH"' EXIT
 
 export HOME=$SCRATCH/home GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=$SCRATCH/gitconfig
+# A real placement root in the caller's environment must never be what a test reaches.
+unset WORKTREE_ROOT
 mkdir -p "$HOME"
 git config --global user.name test
 git config --global user.email test@example.invalid
@@ -748,23 +750,23 @@ t_seed_skips_a_symlink_source() {
 t_seed_failure_warns_and_exits_zero() {
   make_seeded_project
   git -C "$T/project" worktree add -q -b seeded "$T/wt-seeded" 2>/dev/null
+  # root reads through mode 000, so the unreadable half only holds for anyone else.
   chmod 000 "$T/project/.env"
   run provision "$T/wt-seeded"
   chmod 600 "$T/project/.env"
   expect_rc 0
-  expect_out_mention ".env"
-  [[ ! -e $T/wt-seeded/.env ]] || fail "left a partial copy behind"
+  if [[ $EUID -ne 0 ]]; then
+    expect_out_mention ".env"
+    [[ ! -e $T/wt-seeded/.env ]] || fail "left a partial copy behind"
+  fi
   [[ $(cat "$T/wt-seeded/config/app.local") == local ]] || fail "one failure stopped the rest"
 
   # The whole step failing: git cannot list the files.
   git -C "$T/project" worktree add -q -b seeded-b "$T/wt-seeded-b" 2>/dev/null
-  local fake=$T/fake-bin real_git
-  real_git=$(command -v git)
-  mkdir -p "$fake"
-  printf '#!/usr/bin/env bash\ncase " $* " in *" ls-files "*) exit 128 ;; esac\nexec "%s" "$@"\n' "$real_git" >"$fake/git"
-  chmod +x "$fake/git"
-  out=$(PATH=$fake:$PATH "$WORKTREE" provision "$T/wt-seeded-b" 2>"$SCRATCH/stderr") && rc=0 || rc=$?
-  err=$(cat "$SCRATCH/stderr")
+  # A corrupt index in the main checkout: real, so it works on a wrapped binary too, whose
+  # own git comes ahead of anything put on PATH.
+  echo garbage >"$T/project/.git/index"
+  run provision "$T/wt-seeded-b"
   expect_rc 0
   expect_out_mention "seed step FAILED"
 }
@@ -820,21 +822,26 @@ t_create_places_and_provisions() {
 # and create still hands back the path. A path that is not a directory stays exit 1.
 t_provision_never_fails_its_caller() {
   make_project
-  local fake=$SCRATCH/$current/bin
-  mkdir -p "$fake"
-  printf '#!/usr/bin/env bash\n[[ $1 == status ]] && { echo "Found RC allowed 0"; exit 0; }\necho "allow broke" >&2; exit 7\n' >"$fake/direnv"
-  chmod +x "$fake/direnv"
+  local xdg=$T/xdg
+  mkdir -p "$xdg"
   echo 'export FOO=1' >"$T/project/.envrc"
   git -C "$T/project" add .envrc
   git -C "$T/project" commit -q -m envrc
   git -C "$T/project" worktree add -q -b failing "$T/wt-failing" 2>/dev/null
-  out=$(PATH=$fake:$PATH "$WORKTREE" provision "$T/wt-failing" 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  (cd "$T/project" && XDG_DATA_HOME=$xdg direnv allow . >/dev/null 2>&1)
+  # The main checkout stays allowed, and no new allowance can be written: a real failure,
+  # so it works on a wrapped binary too, whose own direnv comes ahead of anything on PATH.
+  chmod 555 "$xdg/direnv/allow"
+  out=$(XDG_DATA_HOME=$xdg "$WORKTREE" provision "$T/wt-failing" 2>"$SCRATCH/stderr") && rc=0 || rc=$?
   err=$(cat "$SCRATCH/stderr")
   expect_rc 0
-  [[ $out == *"FAILED"* ]] || fail "a failed direnv allow did not warn: $out"
-  [[ $out != *"worktree .envrc allowed"* ]] || fail "a failed direnv allow claimed trust: $out"
-  out=$(cd "$T/project" && PATH=$fake:$PATH WORKTREE_ROOT=$T/root "$WORKTREE" create failing-create 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  if [[ $EUID -ne 0 ]]; then
+    [[ $out == *"FAILED"* ]] || fail "a failed direnv allow did not warn: $out"
+    [[ $out != *"worktree .envrc allowed"* ]] || fail "a failed direnv allow claimed trust: $out"
+  fi
+  out=$(cd "$T/project" && XDG_DATA_HOME=$xdg WORKTREE_ROOT=$T/root "$WORKTREE" create failing-create 2>"$SCRATCH/stderr") && rc=0 || rc=$?
   err=$(cat "$SCRATCH/stderr")
+  chmod 755 "$xdg/direnv/allow"
   expect_rc 0
   [[ $out == "$T/root/project/failing-create" ]] || fail "create did not hand back the path: $out"
   run provision "$T/no-such-directory"
