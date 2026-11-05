@@ -12,7 +12,7 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 
 use crate::outcome::CannotTell;
 use crate::say::Sink;
@@ -122,11 +122,7 @@ impl Git {
     /// Runs an action with git's stdout on `sink` and its stderr on ours, and
     /// returns whether it succeeded. Git's words are the report.
     pub fn act(mut self, sink: Sink) -> io::Result<bool> {
-        let stdout = match sink {
-            Sink::Stdout => Stdio::inherit(),
-            Sink::Stderr => Stdio::from(io::stderr()),
-        };
-        Ok(self.command.stdout(stdout).status()?.success())
+        Ok(self.command.stdout(sink.stdio()).status()?.success())
     }
 }
 

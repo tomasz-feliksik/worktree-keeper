@@ -3,6 +3,7 @@
 //! See docs/porting-guide.md. Exit status: 0 done, 1 refused, 2 usage, 3 could not
 //! check. Nothing else may be returned.
 
+mod commands;
 #[allow(dead_code)] // Reached as each command is ported.
 mod git;
 #[allow(dead_code)]
@@ -23,6 +24,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use outcome::{CannotTell, Outcome, Stop, exit_status};
+use say::Sink;
 
 #[derive(Parser)]
 #[command(
@@ -72,11 +74,18 @@ enum Command {
     },
 }
 
-fn run(command: &Command) -> Outcome {
+fn run(command: Command) -> Outcome {
     let name = match command {
-        Command::Create { .. } => "create",
-        Command::Provision { .. } => "provision",
-        Command::Actor { .. } => "actor",
+        Command::Create { branch, base } => {
+            return commands::create::run(&branch, base.as_deref());
+        }
+        Command::Provision { path } => {
+            return commands::provision::run(&path.unwrap_or_else(|| ".".into()), Sink::Stdout);
+        }
+        Command::Actor { dir } => {
+            commands::actor::run(dir);
+            return Ok(());
+        }
         Command::Guard { .. } => "guard",
         Command::Remove { .. } => "remove",
         Command::Sweep { .. } => "sweep",
@@ -87,7 +96,7 @@ fn run(command: &Command) -> Outcome {
 }
 
 fn main() -> ExitCode {
-    let outcome = run(&Cli::parse().command);
+    let outcome = run(Cli::parse().command);
     if let Err(stop) = &outcome {
         // Nowhere left to report a failure to report, and the status still stands.
         drop(writeln!(io::stderr(), "{stop}"));
