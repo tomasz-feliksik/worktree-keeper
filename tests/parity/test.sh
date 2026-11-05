@@ -307,6 +307,16 @@ t_remote_branch_deleted_last() {
   expect_rc 1
   has_remote_branch unmerged || fail "the remote branch went although the local deletion refused"
 
+  # Past the unmerged check, so that only the order protects the remote: a lock on the
+  # ref makes the local deletion itself fail.
+  make_worktree locked-ref
+  git -C "$WT" push -q -u origin locked-ref 2>/dev/null
+  touch "$T/project/.git/refs/heads/locked-ref.lock"
+  run remove --delete-remote "$WT"
+  rm "$T/project/.git/refs/heads/locked-ref.lock"
+  expect_rc 1
+  has_remote_branch locked-ref || fail "the remote branch went before the local deletion failed"
+
   make_worktree plain
   git -C "$WT" push -q -u origin plain 2>/dev/null
   run remove "$WT"
