@@ -1,7 +1,7 @@
 //! Leftovers of removed worktrees, found, and deleted only with `--apply`. No timer
 //! runs this: an unattended delete is a new way to lose data.
 //!
-//! Under each placement root, a directory at depth 1 or 2 is one of:
+//! Under each directory swept, a directory at depth 1 or 2 is one of:
 //!
 //! - **live**: a registered worktree, whose `.git` file points at a git directory that
 //!   points back. Untouched, and so is everything above it.
@@ -11,12 +11,11 @@
 //! - **other**: anything else, such as ignored files a removal left behind, or an
 //!   empty shell. A leftover, deleted by `--apply`.
 //!
-//! And per repository (`--repo`, or every repository a live worktree under a root
+//! And per repository (`--repo`, or every repository a live worktree found
 //! belongs to, or the one you are in): registrations whose worktree directory is gone.
 //! `git worktree prune` would delete their git directories, and with them any
 //! submodule clone inside, so their clones are checked for unpushed commits first.
 
-use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -26,6 +25,7 @@ use std::path::{Path, PathBuf};
 use crate::git::{Git, trimmed_path};
 use crate::outcome::{CannotTell, Outcome, Stop};
 use crate::paths::{self, ResolvedPath, cannot_read};
+use crate::placement;
 use crate::say::{Sink, say};
 use crate::submodules;
 use crate::worktree::parent_of;
@@ -48,7 +48,7 @@ enum Kind {
     Other,
 }
 
-/// What a placement root holds.
+/// What a surveyed directory holds.
 #[derive(Debug, Default)]
 pub struct Found {
     pub live: Vec<PathBuf>,
@@ -57,7 +57,7 @@ pub struct Found {
     repos: Vec<PathBuf>,
 }
 
-/// Classifies what is under one canonical placement root, changing nothing.
+/// Classifies what is under one canonical directory, changing nothing.
 pub fn survey(root: &Path) -> Result<Found, CannotTell> {
     let mut found = Found::default();
     survey_root(root, &mut found)?;
@@ -66,7 +66,7 @@ pub fn survey(root: &Path) -> Result<Found, CannotTell> {
 
 pub fn run(mode: Mode, repos: Vec<PathBuf>, roots: Vec<PathBuf>) -> Outcome {
     let roots = if roots.is_empty() {
-        vec![default_root()?]
+        default_dirs(&repos)?
     } else {
         roots
     };
@@ -135,6 +135,15 @@ pub fn run(mode: Mode, repos: Vec<PathBuf>, roots: Vec<PathBuf>) -> Outcome {
         }
     }
 
+    if mode == Mode::Apply {
+        for root in roots
+            .iter()
+            .filter(|root| placement::is_worktrees_dir(root))
+        {
+            placement::remove_if_empty(root, Sink::Stdout);
+        }
+    }
+
     if mode == Mode::DryRun {
         say(
             Sink::Stdout,
@@ -144,11 +153,32 @@ pub fn run(mode: Mode, repos: Vec<PathBuf>, roots: Vec<PathBuf>) -> Outcome {
     Ok(())
 }
 
-fn default_root() -> Outcome<PathBuf> {
-    env::var_os("WORKTREE_ROOT")
-        .filter(|root| !root.is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(|| Stop::refused("sweep: no placement root given and WORKTREE_ROOT is unset"))
+/// Beside each repository named, or else beside the one the caller is in. Each only once:
+/// two spellings of a repository must not delete its leftovers twice.
+fn default_dirs(repos: &[PathBuf]) -> Outcome<Vec<PathBuf>> {
+    if repos.is_empty() {
+        return Ok(vec![placement::dir_for(&placement::common_here()?)?]);
+    }
+    let mut dirs = Vec::new();
+    for repo in repos {
+        if !paths::is_dir(repo)? {
+            continue;
+        }
+        let dir = placement::dir_for(&common_of(repo)?)?;
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    Ok(dirs)
+}
+
+fn common_of(repo: &Path) -> Result<PathBuf, CannotTell> {
+    let common = Git::at(
+        repo,
+        ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .probe(repo)?;
+    Ok(trimmed_path(common))
 }
 
 /// Depth 1 is a group (`<root>/<repo>`) or, in a flat layout, a worktree. A group
@@ -227,14 +257,7 @@ fn classify(dir: &Path) -> Result<Kind, CannotTell> {
 /// directory, exactly what prune does per entry. Locked registrations are left alone,
 /// as prune leaves them.
 fn sweep_registrations(repo: &Path, mode: Mode) -> Outcome {
-    let common = trimmed_path(
-        Git::at(
-            repo,
-            ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        )
-        .probe(repo)?,
-    );
-    for admin in registrations(&common)? {
+    for admin in registrations(&common_of(repo)?)? {
         if !paths::is_file(&admin.join("gitdir"))? || paths::exists(&admin.join("locked"))? {
             continue;
         }

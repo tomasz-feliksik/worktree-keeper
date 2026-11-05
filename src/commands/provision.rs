@@ -77,7 +77,7 @@ fn submodules(path: &Path, sink: Sink) -> Outcome {
 /// bytes the user already reviewed. A worktree made from another base can carry a
 /// different `.envrc`; that one gets a message and a manual review.
 ///
-/// Deliberately not a `whitelist.prefix` on the placement root, which would trust
+/// Deliberately not a `whitelist.prefix` on a worktrees directory, which would trust
 /// every future `.envrc` under the path, content unseen.
 fn direnv(path: &Path, sink: Sink) -> Outcome {
     if !paths::is_file(&path.join(".envrc"))? {

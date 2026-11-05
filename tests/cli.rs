@@ -44,26 +44,19 @@ fn a_usage_error_exits_two() {
 }
 
 #[test]
-fn an_empty_placement_root_is_refused_as_no_placement_root() {
-    for (command, args) in [
-        ("sweep", vec!["sweep"]),
-        ("create", vec!["create", "some-branch"]),
-    ] {
-        let unset = Command::new(env!("CARGO_BIN_EXE_worktree"))
+fn outside_a_repository_there_is_no_default_place_to_look() {
+    for args in [vec!["sweep"], vec!["status"], vec!["create", "some-branch"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_worktree"))
             .args(&args)
-            .env_remove("WORKTREE_ROOT")
+            .current_dir("/")
             .output()
             .unwrap();
-        let empty = Command::new(env!("CARGO_BIN_EXE_worktree"))
-            .args(&args)
-            .env("WORKTREE_ROOT", "")
-            .output()
-            .unwrap();
-        for output in [unset, empty] {
-            assert_eq!(output.status.code(), Some(1), "{command}");
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(stderr.contains("WORKTREE_ROOT"), "{command}: {stderr}");
-        }
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("not inside a git repository"),
+            "{args:?}: {stderr}"
+        );
     }
 }
 

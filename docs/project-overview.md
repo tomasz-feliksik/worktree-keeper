@@ -50,7 +50,7 @@ supervise agents (workmux and herdr today), rather than competing with them.
 
 | Feature                | What it does                                                                      | Command     |
 | ---------------------- | --------------------------------------------------------------------------------- | ----------- |
-| Placement              | Puts every worktree at `<root>/<repo>/<slug>`                                     | `create`    |
+| Placement              | Puts every worktree at `<parent>/<repo>.worktrees/<slug>`                         | `create`    |
 | Branch setup           | Uses an existing branch, or creates one from a base                               | `create`    |
 | Submodule provisioning | Initialises submodules; if that fails, warns without failing the caller           | `provision` |
 | Trust inheritance      | Applies the `.envrc` rule above                                                   | `provision` |
@@ -100,7 +100,7 @@ worktree lock [--reason <text>] [path]     + mark as occupied
 worktree unlock [path]                     + release it
 
 # Maintenance
-worktree sweep [--apply] [--repo <path>]... [<root>...]
+worktree sweep [--apply] [--repo <path>]... [<dir>...]
 
 # For hooks (workmux pre_remove)
 worktree guard [--force] [--ignore-in-use] [path]     check, then clear metadata
@@ -179,6 +179,27 @@ exits 3 rather than guessing. A process inside the worktree refuses removal, `--
 does not lock on its own: a crashed agent would leave a lock nothing releases, and the in-use check already protects a
 running agent without any cleanup.
 
+### Placement
+
+A worktree lives at `<parent>/<repo>.worktrees/<slug>`, beside the main checkout. There is no setting: placement follows
+from the repository, so `create`, `status` and `sweep` cannot disagree, and a worktree is where you would look for it.
+
+- **Not inside the checkout.** `git clean -ffdx` there deletes uncommitted work with no guard running, and the directory
+  would need ignoring in every repository.
+- **Not one shared `.worktrees`.** Every repository in a parent directory would share it, so slugs would collide.
+- **Only a checkout has a place.** The parent of a submodule's git directory is inside `.git`, and a bare repository's
+  is unrelated, so `create` refuses both.
+- **The directory goes when it empties.** `remove` and `sweep --apply` call `rmdir`, so anything inside keeps it. This
+  fires only through this tool: a worktree removed by another tool leaves the empty directory for `sweep`.
+  `sweep --apply` still deletes a subdirectory it calls a leftover, so look at its dry run first.
+- **`worktree.useRelativePaths` is the user's call.** With absolute links, moving the repository and its worktrees
+  together breaks them until `git worktree repair`, so `create` says so on stderr. It does not set it: the option
+  changes the repository's format version, which older Git refuses to read.
+
+The costs are accepted. Plain `status` and `sweep` cover one repository, `sweep --repo <path>` covers the one named, and
+`sweep ~/code/*.worktrees` covers the rest. Renaming a repository strands its worktrees until `git worktree repair`. A
+read-only parent directory makes `create` refuse.
+
 ### Seed files
 
 A repository lists the gitignored files a new worktree needs in a committed `.worktreeinclude`, in gitignore syntax, and
@@ -203,11 +224,11 @@ The owner does not squash-merge, so this was first deferred. It sits in its own 
 
 `ai-harness` is the first consumer. The Bash tool stays in production until the Rust version replaces it.
 
-| Stays in ai-harness                                                                        | Moves here                                 |
-| ------------------------------------------------------------------------------------------ | ------------------------------------------ |
-| The `bd` wrapper and its tests; this tool should not know about `bd`                       | The command and its tests                  |
-| workmux and herdr hook wiring, and their unit checks                                       | The packaged binary                        |
-| `homeModules.worktree` as a thin adapter from `aiHarness.worktree.*` to `worktreeKeeper.*` | A Home Manager module with its own options |
+| Stays in ai-harness                                                  | Moves here                                 |
+| -------------------------------------------------------------------- | ------------------------------------------ |
+| The `bd` wrapper and its tests; this tool should not know about `bd` | The command and its tests                  |
+| workmux and herdr hook wiring, and their unit checks                 | The packaged binary                        |
+| `homeModules.worktree` as a thin adapter over `worktreeKeeper.*`     | A Home Manager module with its own options |
 
 The adapter satisfies that repository's rule that its options live under `aiHarness.*`, so its hosts do not change. This
 project also supersedes the behaviour-preserving Python rewrite planned there.

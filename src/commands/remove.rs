@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::commands::guard::{self, OwnChanges, Rules};
 use crate::git::{Git, shown, trimmed};
 use crate::outcome::{CannotTell, Outcome, RefusalKind, Stop};
+use crate::placement;
 use crate::say::{Sink, say};
 use crate::temp::TempDir;
 use crate::worktree::LinkedWorktree;
@@ -64,6 +65,9 @@ pub fn run(path: &Path, rules: Rules, fate: BranchFate) -> Outcome {
     // registration, and prune works on the whole repository, where it would delete the
     // unpushed clones of any other stale registration. Sweep judges those one by one.
     say(Sink::Stdout, format_args!("removed {}", wt.display()));
+    if let Ok(dir) = placement::dir_for(&worktree.common) {
+        placement::remove_if_empty(&dir, Sink::Stdout);
+    }
 
     if branch.is_empty() {
         say(

@@ -13,8 +13,6 @@ SCRATCH=$(mktemp -d)
 trap 'rm -rf "$SCRATCH"' EXIT
 
 export HOME=$SCRATCH/home GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=$SCRATCH/gitconfig
-# A real placement root in the caller's environment must never be what a test reaches.
-unset WORKTREE_ROOT
 mkdir -p "$HOME"
 git config --global user.name test
 git config --global user.email test@example.invalid
@@ -769,32 +767,39 @@ t_status_reports_unpushed_commits() {
   expect_out_mention '"kind": "unpushed_submodule"'
 }
 
-# Every worktree under the root gets a verdict; an orphan is unknown, never safe, and
-# makes the exit status 3. Nothing is deleted.
+# Every worktree of the repository gets a verdict, wherever it lives; the main checkout
+# is not one. An orphan is unknown, never safe, and makes the exit status 3. Nothing is
+# deleted. Outside a repository, with no path, there is nothing to look at.
 t_status_lists_every_worktree() {
   make_project
-  local root=$T/root safe busy created
-  safe=$(cd "$T/project" && WORKTREE_ROOT=$root "$WORKTREE" create safe-one 2>/dev/null)
-  busy=$(cd "$T/project" && WORKTREE_ROOT=$root "$WORKTREE" create dirty-one 2>/dev/null)
+  local dir=$T/project.worktrees safe busy elsewhere=$T/elsewhere/placed-by-another-tool
+  safe=$(cd "$T/project" && "$WORKTREE" create safe-one 2>/dev/null)
+  busy=$(cd "$T/project" && "$WORKTREE" create dirty-one 2>/dev/null)
+  git -C "$T/project" worktree add -q -b other "$elsewhere" 2>/dev/null
   echo x >"$busy/scratch"
-  out=$(WORKTREE_ROOT=$root "$WORKTREE" status 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  out=$(cd "$T/project" && "$WORKTREE" status 2>"$SCRATCH/stderr") && rc=0 || rc=$?
   err=$(cat "$SCRATCH/stderr")
   expect_rc 0
   [[ $out == *"removable"*"$safe"* ]] || fail "the clean worktree is not removable: $out"
   [[ $out == *"refused"*"$busy"*"dirty"* ]] || fail "the dirty worktree is not refused: $out"
+  [[ $out == *"$elsewhere"* ]] || fail "a worktree outside the directory is missing: $out"
+  [[ $(wc -l <<<"$out") -eq 3 ]] || fail "expected three worktrees and no main checkout: $out"
 
-  mkdir -p "$root/project/orphan"
-  echo "gitdir: $T/nowhere" >"$root/project/orphan/.git"
-  out=$(WORKTREE_ROOT=$root "$WORKTREE" status 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  mkdir -p "$dir/orphan"
+  echo "gitdir: $T/nowhere" >"$dir/orphan/.git"
+  out=$(cd "$safe" && "$WORKTREE" status 2>"$SCRATCH/stderr") && rc=0 || rc=$?
   err=$(cat "$SCRATCH/stderr")
   expect_rc 3
-  [[ $out == *"unknown"*"$root/project/orphan"* ]] || fail "an orphan is not unknown: $out"
-  [[ -f $busy/scratch && -d $root/project/orphan ]] || fail "status deleted something"
+  [[ $out == *"unknown"*"$dir/orphan"* ]] || fail "an orphan is not unknown: $out"
+  [[ -f $busy/scratch && -d $dir/orphan ]] || fail "status deleted something"
 
-  out=$(env -u WORKTREE_ROOT "$WORKTREE" status 2>"$SCRATCH/stderr") && rc=0 || rc=$?
-  err=$(cat "$SCRATCH/stderr")
+  run status "$dir"
+  expect_rc 3
+  [[ $out == *"$safe"* && $out == *"$dir/orphan"* ]] || fail "a named directory was not surveyed: $out"
+
+  run status
   expect_rc 1
-  expect_err "no placement root"
+  expect_err "not inside a git repository"
 }
 
 # --- seed files ---------------------------------------------------------------
@@ -953,13 +958,109 @@ t_provision_noops() {
   [[ -z $out ]] || fail "provision said something where nothing applies: $out"
 }
 
+# The same absolute path from anywhere in the repository, beside the main checkout.
 t_create_places_and_provisions() {
   make_project
-  out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" create feat/place 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  local want=$T/project.worktrees/feat-place
+  out=$(cd "$T/project" && "$WORKTREE" create feat/place 2>"$SCRATCH/stderr") && rc=0 || rc=$?
   err=$(cat "$SCRATCH/stderr")
   expect_rc 0
-  [[ $out == "$T/root/project/feat-place" ]] || fail "placed at '$out', expected $T/root/project/feat-place"
-  [[ -e $T/root/project/feat-place/sub/nested/.git ]] || fail "create did not provision nested submodules"
+  [[ $out == "$want" ]] || fail "placed at '$out', expected $want"
+  [[ -e $want/sub/nested/.git ]] || fail "create did not provision nested submodules"
+  mkdir -p "$T/project/below"
+  out=$(cd "$T/project/below" && "$WORKTREE" create from-below 2>/dev/null) && rc=0 || rc=$?
+  expect_rc 0
+  [[ $out == "$T/project.worktrees/from-below" ]] || fail "from a subdirectory: '$out'"
+  [[ -f $out/README ]] || fail "from a subdirectory: nothing was checked out at '$out'"
+  out=$(cd "$want" && "$WORKTREE" create from-worktree 2>/dev/null) && rc=0 || rc=$?
+  expect_rc 0
+  [[ $out == "$T/project.worktrees/from-worktree" ]] || fail "from a worktree: '$out'"
+  [[ ! -e $T/project/below/project.worktrees && ! -e $want/project.worktrees ]] || fail "placed relative to the current directory"
+}
+
+# Only a checkout has a place beside it. The parent of a submodule's git directory is
+# inside .git, and a bare repository's is unrelated, so both refuse and create nothing.
+t_create_refuses_what_is_not_a_checkout() {
+  make_project
+  out=$(cd "$T/project/sub" && "$WORKTREE" create in-submodule 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 1
+  expect_err "is not the .git directory of a checkout"
+  [[ -z $out ]] || fail "a refused create printed a path: $out"
+  [[ ! -e $T/project/.git/modules.worktrees ]] || fail "created inside the git directory"
+  out=$(cd "$T/project.git" && "$WORKTREE" create in-bare 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 1
+  expect_err "is not the .git directory of a checkout"
+  [[ ! -e $SCRATCH/$current.worktrees ]] || fail "created beside the wrong folder"
+  git -C "$T/project.git" show-ref --verify --quiet refs/heads/in-bare && fail "a refused create made a branch"
+  true
+}
+
+# Absolute links break if the repository and its worktrees move together, so create says
+# so, on stderr, because callers read stdout as the path. Set to true, it says nothing.
+t_create_notes_absolute_links() {
+  make_project
+  out=$(cd "$T/project" && "$WORKTREE" create absolute 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  expect_err "worktree.useRelativePaths is not true"
+  [[ $out == "$T/project.worktrees/absolute" ]] || fail "stdout is not only the path: $out"
+  git -C "$T/project" config worktree.useRelativePaths false
+  out=$(cd "$T/project" && "$WORKTREE" create turned-off 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_err "worktree.useRelativePaths is not true"
+  git -C "$T/project" config worktree.useRelativePaths true
+  out=$(cd "$T/project" && "$WORKTREE" create relative 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  [[ $err != *"useRelativePaths"* ]] || fail "noted a setting that is on: $err"
+  [[ $(cat "$out/.git") != "gitdir: /"* ]] || fail "setup: .git is not relative"
+}
+
+# The directory goes with its last worktree, and only then. Anything in it keeps it,
+# even something the user put there. A failed create leaves nothing behind either.
+t_remove_tidies_the_empty_directory() {
+  make_project
+  local dir=$T/project.worktrees one two
+  git -C "$T/project" config worktree.useRelativePaths true
+  one=$(cd "$T/project" && "$WORKTREE" create one 2>/dev/null)
+  two=$(cd "$T/project" && "$WORKTREE" create two 2>/dev/null)
+  run remove --keep-branch "$one"
+  expect_rc 0
+  [[ -d $two ]] || fail "removing one worktree touched the other"
+  [[ $out != *"removed empty"* ]] || fail "claimed to remove a directory still in use: $out"
+  echo mine >"$dir/notes"
+  run remove --keep-branch "$two"
+  expect_rc 0
+  [[ -f $dir/notes ]] || fail "removal deleted what the user put in the directory"
+  [[ $out != *"could not remove"* ]] || fail "warned about a directory that is simply not empty: $out"
+  rm "$dir/notes"
+  local three
+  three=$(cd "$T/project" && "$WORKTREE" create three 2>/dev/null)
+  run remove --keep-branch "$three"
+  expect_rc 0
+  expect_out_mention "removed empty $dir"
+  [[ ! -e $dir ]] || fail "the empty directory stayed"
+
+  # A directory that cannot be removed warns, and the removal has still succeeded.
+  if [[ $EUID -ne 0 ]]; then
+    local stuck
+    stuck=$(cd "$T/project" && "$WORKTREE" create stuck 2>/dev/null)
+    chmod 555 "$T"
+    run remove --keep-branch "$stuck"
+    chmod 755 "$T"
+    expect_rc 0
+    expect_out_mention "could not remove $dir"
+    [[ ! -e $stuck ]] || fail "the worktree was not removed"
+    rmdir "$dir"
+  fi
+
+  git -C "$T/project" branch taken
+  git -C "$T/project" worktree add -q "$T/holds-taken" taken 2>/dev/null
+  out=$(cd "$T/project" && "$WORKTREE" create taken 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  expect_rc 1
+  [[ ! -e $dir ]] || fail "a failed create left the directory behind"
 }
 
 # workmux's post_create is fail-fast, so a failed `direnv allow` warns and exits 0,
@@ -983,11 +1084,11 @@ t_provision_never_fails_its_caller() {
     [[ $out == *"FAILED"* ]] || fail "a failed direnv allow did not warn: $out"
     [[ $out != *"worktree .envrc allowed"* ]] || fail "a failed direnv allow claimed trust: $out"
   fi
-  out=$(cd "$T/project" && XDG_DATA_HOME=$xdg WORKTREE_ROOT=$T/root "$WORKTREE" create failing-create 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  out=$(cd "$T/project" && XDG_DATA_HOME=$xdg "$WORKTREE" create failing-create 2>"$SCRATCH/stderr") && rc=0 || rc=$?
   err=$(cat "$SCRATCH/stderr")
   chmod 755 "$xdg/direnv/allow"
   expect_rc 0
-  [[ $out == "$T/root/project/failing-create" ]] || fail "create did not hand back the path: $out"
+  [[ $out == "$T/project.worktrees/failing-create" ]] || fail "create did not hand back the path: $out"
   run provision "$T/no-such-directory"
   expect_rc 1
   expect_err "is not a directory"
@@ -998,21 +1099,21 @@ t_provision_never_fails_its_caller() {
 # returns its path; a directory that is no worktree at all is refused too.
 t_create_refuses_a_slug_collision() {
   make_project
-  local first=$T/root/project/feat-x created
-  created=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" create feat/x 2>/dev/null)
+  local first=$T/project.worktrees/feat-x created
+  created=$(cd "$T/project" && "$WORKTREE" create feat/x 2>/dev/null)
   [[ $created == "$first" ]] || fail "setup: placed at '$created'"
-  out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" create feat-x 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  out=$(cd "$T/project" && "$WORKTREE" create feat-x 2>"$SCRATCH/stderr") && rc=0 || rc=$?
   err=$(cat "$SCRATCH/stderr")
   expect_rc 1
   expect_err "feat/x"
   expect_err "feat-x"
   [[ -z $out ]] || fail "a refused create printed a path: $out"
-  out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" create feat/x 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  out=$(cd "$T/project" && "$WORKTREE" create feat/x 2>"$SCRATCH/stderr") && rc=0 || rc=$?
   err=$(cat "$SCRATCH/stderr")
   expect_rc 0
   [[ $out == "$first" ]] || fail "the same branch did not get its path back: $out"
-  mkdir -p "$T/root-outside/project/not-git"
-  out=$(cd "$T/project" && WORKTREE_ROOT=$T/root-outside "$WORKTREE" create not/git 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  mkdir -p "$T/project.worktrees/not-git"
+  out=$(cd "$T/project" && "$WORKTREE" create not/git 2>"$SCRATCH/stderr") && rc=0 || rc=$?
   err=$(cat "$SCRATCH/stderr")
   expect_rc 1
   expect_err "not a worktree"
@@ -1078,7 +1179,7 @@ t_sweep() {
   local root=$T/root
   mkdir -p "$root/project/gone-worktree/.vite" "$root/empty-group"
   echo cache >"$root/project/gone-worktree/.vite/x"
-  out=$(cd "$T/project" && WORKTREE_ROOT=$root "$WORKTREE" create live 2>/dev/null)
+  git -C "$T/project" worktree add -q -b live "$root/project/live" 2>/dev/null
   mkdir -p "$root/project/orphan"
   echo "gitdir: $T/nowhere" >"$root/project/orphan/.git"
   echo "precious" >"$root/project/orphan/work"
@@ -1098,6 +1199,90 @@ t_sweep() {
   [[ ! -e $root/empty-group ]] || fail "--apply did not delete the empty group"
   [[ -f $root/project/orphan/work ]] || fail "--apply deleted an orphan's files"
   [[ -d $root/project/live/.git || -f $root/project/live/.git ]] || fail "--apply touched a live worktree"
+}
+
+# With no directory named, sweep looks beside this repository, from anywhere in it, and
+# outside one it refuses. --apply tidies the directory once nothing is left in it, and
+# a dry run does not.
+t_sweep_defaults_to_this_repository() {
+  make_project
+  local dir=$T/project.worktrees live
+  mkdir -p "$dir/gone/.vite"
+  live=$(cd "$T/project" && "$WORKTREE" create live 2>/dev/null)
+  out=$(cd "$live" && "$WORKTREE" sweep 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  [[ $out == *"leftover $dir/gone"* ]] || fail "leftover not found from a worktree: $out"
+  [[ $out != *"$live"* ]] || fail "a live worktree was reported: $out"
+  out=$(cd "$T/project" && "$WORKTREE" sweep --apply 2>/dev/null) && rc=0 || rc=$?
+  expect_rc 0
+  [[ ! -e $dir/gone && -d $live ]] || fail "--apply deleted the wrong things: $out"
+
+  run remove --keep-branch "$live"
+  expect_rc 0
+  mkdir "$dir"
+  out=$(cd "$T/project" && "$WORKTREE" sweep 2>/dev/null) && rc=0 || rc=$?
+  [[ -d $dir ]] || fail "a dry run removed the directory"
+  echo mine >"$dir/notes"
+  out=$(cd "$T/project" && "$WORKTREE" sweep --apply 2>/dev/null) && rc=0 || rc=$?
+  [[ -f $dir/notes ]] || fail "--apply deleted a file the user put there"
+  rm "$dir/notes"
+  out=$(cd "$T/project" && "$WORKTREE" sweep --apply 2>/dev/null) && rc=0 || rc=$?
+  expect_rc 0
+  [[ ! -e $dir ]] || fail "--apply left the empty directory"
+
+  # Only a directory named as this tool names one is tidied.
+  mkdir "$T/kept" "$T/other.worktrees"
+  run sweep --apply "$T/kept" "$T/other.worktrees"
+  expect_rc 0
+  [[ -d $T/kept ]] || fail "--apply removed an empty directory it does not own"
+  [[ ! -e $T/other.worktrees ]] || fail "--apply left a named empty worktrees directory"
+
+  run sweep
+  expect_rc 1
+  expect_err "not inside a git repository"
+}
+
+# --repo with no directory looks beside each repository named, not beside the one the
+# caller stands in, and works from outside any repository.
+t_sweep_repo_names_where_to_look() {
+  make_project
+  local dir=$T/project.worktrees here=$T/here live
+  git init -q "$here"
+  git -C "$here" commit -q --allow-empty -m init
+  mkdir -p "$dir/gone" "$T/here.worktrees/theirs"
+
+  run sweep --repo "$T/project"
+  expect_rc 0
+  expect_out_mention "leftover $dir/gone"
+
+  out=$(cd "$here" && "$WORKTREE" sweep --repo "$T/project" 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  expect_out_mention "leftover $dir/gone"
+  [[ $out != *"theirs"* ]] || fail "looked beside the current repository: $out"
+
+  # Two spellings of one repository are one directory, so the second delete has nothing to trip on.
+  run sweep --apply --repo "$T/project" --repo "$T/project/"
+  expect_rc 0
+  [[ ! -e $dir ]] || fail "--apply left what it was pointed at: $out"
+  [[ -d $T/here.worktrees/theirs ]] || fail "--apply touched another repository's directory"
+
+  # A linked worktree names its repository.
+  live=$(cd "$T/project" && "$WORKTREE" create live 2>/dev/null)
+  mkdir "$dir/also-gone"
+  run sweep --repo "$live"
+  expect_rc 0
+  expect_out_mention "leftover $dir/also-gone"
+
+  # A repository with no place beside it is refused, and naming a directory still works.
+  git init -q --bare "$T/bare.git"
+  run sweep --repo "$T/bare.git"
+  expect_rc 1
+  expect_err "not the .git directory of a checkout"
+  run sweep --repo "$T/bare.git" "$T/here.worktrees"
+  expect_rc 0
+  expect_out_mention "leftover $T/here.worktrees/theirs"
 }
 
 # The flat layout workmux used before the shared root — <repo>__worktrees/<name>,
@@ -1189,11 +1374,11 @@ t_help_never_acts() {
   make_project
   local sub
   for sub in status check create provision actor guard remove lock unlock sweep; do
-    out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" "$sub" --help 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+    out=$(cd "$T/project" && "$WORKTREE" "$sub" --help 2>"$SCRATCH/stderr") && rc=0 || rc=$?
     err=$(cat "$SCRATCH/stderr")
     expect_rc 0
     [[ $out == *"Usage: worktree $sub"* ]] || fail "$sub --help did not print its usage: $out"
-    out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" "$sub" --bogus 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+    out=$(cd "$T/project" && "$WORKTREE" "$sub" --bogus 2>"$SCRATCH/stderr") && rc=0 || rc=$?
     err=$(cat "$SCRATCH/stderr")
     expect_rc 2
     expect_err "--bogus"

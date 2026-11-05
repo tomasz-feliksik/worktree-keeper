@@ -8,6 +8,7 @@ mod git;
 mod in_use;
 mod outcome;
 mod paths;
+mod placement;
 mod say;
 mod submodules;
 mod temp;
@@ -41,7 +42,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Add <root>/<repo>/<slug>, then provision it
+    /// Add <parent>/<repo>.worktrees/<slug>, then provision it
     Create {
         branch: String,
         base: Option<String>,
@@ -50,7 +51,7 @@ enum Command {
     Provision { path: Option<PathBuf> },
     /// Print the identity of the worktree containing a directory
     Actor { dir: Option<PathBuf> },
-    /// List every worktree and whether it could be removed; changes nothing
+    /// List this repository's worktrees, or a directory's, and whether each could be removed; changes nothing
     Status {
         #[arg(long)]
         json: bool,
@@ -100,6 +101,7 @@ enum Command {
         apply: bool,
         #[arg(long = "repo")]
         repos: Vec<PathBuf>,
+        #[arg(value_name = "DIR")]
         roots: Vec<PathBuf>,
     },
 }
