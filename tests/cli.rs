@@ -33,8 +33,14 @@ fn a_usage_error_exits_two() {
 }
 
 #[test]
-fn an_unimplemented_command_never_reads_as_success() {
-    let output = worktree(&["sweep", "/nonexistent"]);
+fn a_directory_outside_git_is_could_not_tell_rather_than_safe() {
+    let output = worktree(&["guard", "/"]);
     assert_eq!(output.status.code(), Some(3));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("nothing was done"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot inspect"));
+}
+
+#[test]
+fn a_path_that_is_not_a_directory_is_refused() {
+    let output = worktree(&["guard", "/nonexistent"]);
+    assert_eq!(output.status.code(), Some(1));
 }

@@ -22,7 +22,8 @@ use clap::{Parser, Subcommand};
 
 use commands::guard::OwnChanges;
 use commands::remove::BranchFate;
-use outcome::{CannotTell, Outcome, Stop, exit_status};
+use commands::sweep::Mode;
+use outcome::{Outcome, exit_status};
 use say::Sink;
 
 #[derive(Parser)]
@@ -74,25 +75,16 @@ enum Command {
 }
 
 fn run(command: Command) -> Outcome {
-    let name = match command {
-        Command::Create { branch, base } => {
-            return commands::create::run(&branch, base.as_deref());
-        }
+    match command {
+        Command::Create { branch, base } => commands::create::run(&branch, base.as_deref()),
         Command::Provision { path } => {
-            return commands::provision::run(&path.unwrap_or_else(|| ".".into()), Sink::Stdout);
+            commands::provision::run(&path.unwrap_or_else(|| ".".into()), Sink::Stdout)
         }
         Command::Actor { dir } => {
             commands::actor::run(dir);
-            return Ok(());
+            Ok(())
         }
-        Command::Guard { force, path } => {
-            let own_changes = if force {
-                OwnChanges::MayBeLost
-            } else {
-                OwnChanges::MustBeClean
-            };
-            return commands::guard::run(path, own_changes);
-        }
+        Command::Guard { force, path } => commands::guard::run(path, OwnChanges::from_force(force)),
         Command::Remove {
             force,
             keep_branch,
@@ -106,13 +98,17 @@ fn run(command: Command) -> Outcome {
             } else {
                 BranchFate::DeleteLocal
             };
-            return commands::remove::run(&path, OwnChanges::from_force(force), fate);
+            commands::remove::run(&path, OwnChanges::from_force(force), fate)
         }
-        Command::Sweep { .. } => "sweep",
-    };
-    Err(Stop::CannotTell(CannotTell::new(format!(
-        "worktree: {name} is not implemented yet; nothing was done"
-    ))))
+        Command::Sweep {
+            apply,
+            repos,
+            roots,
+        } => {
+            let mode = if apply { Mode::Apply } else { Mode::DryRun };
+            commands::sweep::run(mode, repos, roots)
+        }
+    }
 }
 
 fn main() -> ExitCode {

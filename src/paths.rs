@@ -60,7 +60,6 @@ pub fn read_gitfile(dir: &Path) -> Result<Option<ResolvedPath>, CannotTell> {
 }
 
 /// Where a registration's `<admin dir>/gitdir` points: its worktree's `.git`.
-#[allow(dead_code)] // `sweep` reads it.
 pub fn read_backpointer(admin_dir: &Path) -> Result<ResolvedPath, CannotTell> {
     let file = admin_dir.join("gitdir");
     let contents = fs::read(&file).map_err(|error| cannot_read(&file, &error))?;
@@ -83,7 +82,6 @@ pub fn is_file(path: &Path) -> Result<bool, CannotTell> {
 }
 
 /// The real directories directly inside `dir`, not symlinks to them, sorted.
-#[allow(dead_code)] // `sweep` reads it.
 pub fn subdirectories(dir: &Path) -> Result<Vec<PathBuf>, CannotTell> {
     let mut found = Vec::new();
     for entry in fs::read_dir(dir).map_err(|error| cannot_read(dir, &error))? {
