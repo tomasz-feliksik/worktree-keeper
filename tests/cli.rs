@@ -34,7 +34,7 @@ fn a_usage_error_exits_two() {
 
 #[test]
 fn an_unimplemented_command_never_reads_as_success() {
-    let output = worktree(&["guard", "/nonexistent"]);
+    let output = worktree(&["sweep", "/nonexistent"]);
     assert_eq!(output.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&output.stderr).contains("nothing was done"));
 }

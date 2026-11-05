@@ -4,17 +4,14 @@
 //! check. Nothing else may be returned.
 
 mod commands;
-#[allow(dead_code)] // Reached as each command is ported.
 mod git;
-#[allow(dead_code)]
 mod outcome;
-#[allow(dead_code)]
 mod paths;
-#[allow(dead_code)]
 mod say;
+mod submodules;
+mod temp;
 #[cfg(test)]
 mod testutil;
-#[allow(dead_code)]
 mod worktree;
 
 use std::io::{self, Write};
@@ -23,6 +20,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+use commands::guard::OwnChanges;
 use outcome::{CannotTell, Outcome, Stop, exit_status};
 use say::Sink;
 
@@ -86,7 +84,14 @@ fn run(command: Command) -> Outcome {
             commands::actor::run(dir);
             return Ok(());
         }
-        Command::Guard { .. } => "guard",
+        Command::Guard { force, path } => {
+            let own_changes = if force {
+                OwnChanges::MayBeLost
+            } else {
+                OwnChanges::MustBeClean
+            };
+            return commands::guard::run(path, own_changes);
+        }
         Command::Remove { .. } => "remove",
         Command::Sweep { .. } => "sweep",
     };

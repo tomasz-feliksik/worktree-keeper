@@ -111,6 +111,7 @@ impl Git {
 
     /// The command's exit code, with its output discarded, for a command whose
     /// codes mean different things. `None` if a signal killed it.
+    #[allow(dead_code)] // `remove` is next.
     pub fn exit_code(mut self, about: &Path) -> Result<Option<i32>, CannotTell> {
         let output = self
             .command
