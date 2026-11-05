@@ -528,6 +528,31 @@ t_create_places_and_provisions() {
   [[ -e $T/root/project/feat-place/sub/nested/.git ]] || fail "create did not provision nested submodules"
 }
 
+# workmux's post_create is fail-fast, so a failed `direnv allow` warns and exits 0,
+# and create still hands back the path. A path that is not a directory stays exit 1.
+t_provision_never_fails_its_caller() {
+  make_project
+  local fake=$SCRATCH/$current/bin
+  mkdir -p "$fake"
+  printf '#!/usr/bin/env bash\n[[ $1 == status ]] && { echo "Found RC allowed 0"; exit 0; }\necho "allow broke" >&2; exit 7\n' >"$fake/direnv"
+  chmod +x "$fake/direnv"
+  echo 'export FOO=1' >"$T/project/.envrc"
+  git -C "$T/project" add .envrc
+  git -C "$T/project" commit -q -m envrc
+  git -C "$T/project" worktree add -q -b failing "$T/wt-failing" 2>/dev/null
+  out=$(PATH=$fake:$PATH "$WORKTREE" provision "$T/wt-failing" 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  [[ $out == *"FAILED"* ]] || fail "a failed direnv allow did not warn: $out"
+  out=$(cd "$T/project" && PATH=$fake:$PATH WORKTREE_ROOT=$T/root "$WORKTREE" create failing-create 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  [[ $out == "$T/root/project/failing-create" ]] || fail "create did not hand back the path: $out"
+  run provision "$T/no-such-directory"
+  expect_rc 1
+  expect_err "is not a directory"
+}
+
 # feat/x and feat-x share a slug. Asking for the second must refuse, naming both,
 # rather than hand back a worktree on the first. Asking again for the first still
 # returns its path; a directory that is no worktree at all is refused too.

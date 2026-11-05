@@ -1,5 +1,11 @@
 //! Submodules, then gated direnv trust, in the order they must run: a populated
 //! tree before anything reads it, and trust last so a broken tree is never trusted.
+//!
+//! Its callers' contract is that it never fails them: workmux's `post_create` is
+//! fail-fast, so a non-zero exit leaves a half-created worktree. So a step that fails
+//! warns, and trust is simply not given. The one refusal is a path that is not a
+//! directory, which no real hook passes: there is no worktree to half-create, and
+//! exit 0 would hide a caller's typo.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,18 +24,26 @@ pub fn run(path: &Path, sink: Sink) -> Outcome {
             path.display()
         )));
     }
-    submodules(path, sink)?;
-    direnv(path, sink)
+    if let Err(stop) = submodules(path, sink) {
+        say(
+            sink,
+            format_args!("submodule step FAILED, continuing: {stop}"),
+        );
+    }
+    if let Err(stop) = direnv(path, sink) {
+        say(
+            sink,
+            format_args!("direnv step FAILED, not trusted: {stop}"),
+        );
+    }
+    Ok(())
 }
 
 /// `git worktree add` leaves submodules uninitialised (observed 2026-08-24: the
 /// first `nix develop` in a fresh worktree failed on an empty submodule), and
 /// `submodule.recurse=true` does not cover worktree creation.
 ///
-/// Never fails the caller: workmux's `post_create` is fail-fast (a non-zero hook
-/// aborts every remaining one and leaves the worktree half-created, measured on
-/// 0.1.240), so an unreachable submodule remote must not cost the worktree its
-/// direnv trust below.
+/// An unreachable submodule remote must not cost the worktree its direnv trust below.
 fn submodules(path: &Path, sink: Sink) -> Outcome {
     if !paths::is_file(&path.join(".gitmodules"))? {
         return Ok(());
