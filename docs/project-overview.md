@@ -196,9 +196,9 @@ from the repository, so `create`, `status` and `sweep` cannot disagree, and a wo
   together breaks them until `git worktree repair`, so `create` says so on stderr. It does not set it: the option
   changes the repository's format version, which older Git refuses to read.
 
-The costs are accepted. Plain `status` and `sweep` cover one repository, and `sweep ~/code/*.worktrees` covers the rest.
-Renaming a repository strands its worktrees until `git worktree repair`. A read-only parent directory makes `create`
-refuse.
+The costs are accepted. Plain `status` and `sweep` cover one repository, `sweep --repo <path>` covers the one named, and
+`sweep ~/code/*.worktrees` covers the rest. Renaming a repository strands its worktrees until `git worktree repair`. A
+read-only parent directory makes `create` refuse.
 
 ### Seed files
 

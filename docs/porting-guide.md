@@ -44,18 +44,19 @@ on `t_help_never_acts`, on every defect fixed below, and on every test of a comm
 
 Keep this list current. Anything not listed here must behave exactly as Bash does.
 
-| Behaviour                   | Bash                                                 | Rust                                                          | Why                                          |
-| --------------------------- | ---------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------- |
-| `--help`                    | Exit 2, usage on stderr                              | Exit 0, help on stdout                                        | `clap`, and the normal convention            |
-| Unknown option, any command | Exit 2 or 1, by command, with a hand-written message | Exit 2, `clap`'s message                                      | `clap`; exit 2 means usage anyway            |
-| A branch starting with `-`  | Refused by hand                                      | Rejected by `clap` as an option                               | Same result                                  |
-| Placement                   | `<root>/<repo>/<slug>`, from a configured root       | `<parent>/<repo>.worktrees/<slug>`, with nothing to configure | See below                                    |
-| `status`, `sweep` default   | The configured root, across repositories             | The current repository; refused outside one                   | There is no root any more                    |
-| Where `create` can run      | Any repository                                       | Refused unless the git directory is named `.git`              | Elsewhere the path is wrong or inside `.git` |
-| Paths with spaces           | Split by `awk`, so misread                           | Read with `-z` and split at the tab                           | The limit was never intended                 |
-| A probe's stderr            | Mixed into some parsed output                        | Never part of what is parsed                                  | Parsing a warning is a wrong answer          |
-| A failed `git worktree add` | Git's own status, such as 128                        | Exit 1                                                        | The exit contract has no 128                 |
-| Unreadable directory entry  | A short list                                         | Exit 3                                                        | A short list is what this tool prevents      |
+| Behaviour                    | Bash                                                 | Rust                                                          | Why                                          |
+| ---------------------------- | ---------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------- |
+| `--help`                     | Exit 2, usage on stderr                              | Exit 0, help on stdout                                        | `clap`, and the normal convention            |
+| Unknown option, any command  | Exit 2 or 1, by command, with a hand-written message | Exit 2, `clap`'s message                                      | `clap`; exit 2 means usage anyway            |
+| A branch starting with `-`   | Refused by hand                                      | Rejected by `clap` as an option                               | Same result                                  |
+| Placement                    | `<root>/<repo>/<slug>`, from a configured root       | `<parent>/<repo>.worktrees/<slug>`, with nothing to configure | See below                                    |
+| `status`, `sweep` default    | The configured root, across repositories             | The current repository; refused outside one                   | There is no root any more                    |
+| `sweep --repo`, no directory | The configured root                                  | Beside each repository named, from anywhere                   | There is no root any more                    |
+| Where `create` can run       | Any repository                                       | Refused unless the git directory is named `.git`              | Elsewhere the path is wrong or inside `.git` |
+| Paths with spaces            | Split by `awk`, so misread                           | Read with `-z` and split at the tab                           | The limit was never intended                 |
+| A probe's stderr             | Mixed into some parsed output                        | Never part of what is parsed                                  | Parsing a warning is a wrong answer          |
+| A failed `git worktree add`  | Git's own status, such as 128                        | Exit 1                                                        | The exit contract has no 128                 |
+| Unreadable directory entry   | A short list                                         | Exit 3                                                        | A short list is what this tool prevents      |
 
 The `--help` guarantee stays: **`--help` and a mistyped option never act**, so nothing may be created, and no branch may
 be made.
@@ -245,6 +246,7 @@ named test went red with its own failure message rather than a crash. `cargo-mut
 | Sweep deletes without `--apply`                                | `sweep`                                         |
 | Orphans classified as leftovers                                | `sweep`                                         |
 | Live worktrees classified as leftovers                         | `sweep_flat_layout`                             |
+| Sweep looks beside the caller's repository, not the one named  | `sweep_repo_names_where_to_look`                |
 | Prune ignores unpushed commits                                 | `sweep_stale_registration`                      |
 | Registration's `gitdir` read from the current directory        | `sweep_relative_paths`                          |
 | A worktree's `.git` pointer read from the current directory    | `sweep_relative_paths`                          |

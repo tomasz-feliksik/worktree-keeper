@@ -66,7 +66,7 @@ pub fn survey(root: &Path) -> Result<Found, CannotTell> {
 
 pub fn run(mode: Mode, repos: Vec<PathBuf>, roots: Vec<PathBuf>) -> Outcome {
     let roots = if roots.is_empty() {
-        vec![placement::dir_for(&placement::common_here()?)?]
+        default_dirs(&repos)?
     } else {
         roots
     };
@@ -153,6 +153,34 @@ pub fn run(mode: Mode, repos: Vec<PathBuf>, roots: Vec<PathBuf>) -> Outcome {
     Ok(())
 }
 
+/// Beside each repository named, or else beside the one the caller is in. Each only once:
+/// two spellings of a repository must not delete its leftovers twice.
+fn default_dirs(repos: &[PathBuf]) -> Outcome<Vec<PathBuf>> {
+    if repos.is_empty() {
+        return Ok(vec![placement::dir_for(&placement::common_here()?)?]);
+    }
+    let mut dirs = Vec::new();
+    for repo in repos {
+        if !paths::is_dir(repo)? {
+            continue;
+        }
+        let dir = placement::dir_for(&common_of(repo)?)?;
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    Ok(dirs)
+}
+
+fn common_of(repo: &Path) -> Result<PathBuf, CannotTell> {
+    let common = Git::at(
+        repo,
+        ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .probe(repo)?;
+    Ok(trimmed_path(common))
+}
+
 /// Depth 1 is a group (`<root>/<repo>`) or, in a flat layout, a worktree. A group
 /// holding nothing kept is one leftover, reported once; otherwise each of its
 /// non-worktree children is.
@@ -229,14 +257,7 @@ fn classify(dir: &Path) -> Result<Kind, CannotTell> {
 /// directory, exactly what prune does per entry. Locked registrations are left alone,
 /// as prune leaves them.
 fn sweep_registrations(repo: &Path, mode: Mode) -> Outcome {
-    let common = trimmed_path(
-        Git::at(
-            repo,
-            ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        )
-        .probe(repo)?,
-    );
-    for admin in registrations(&common)? {
+    for admin in registrations(&common_of(repo)?)? {
         if !paths::is_file(&admin.join("gitdir"))? || paths::exists(&admin.join("locked"))? {
             continue;
         }

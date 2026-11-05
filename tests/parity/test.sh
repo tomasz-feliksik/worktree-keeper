@@ -1243,6 +1243,48 @@ t_sweep_defaults_to_this_repository() {
   expect_err "not inside a git repository"
 }
 
+# --repo with no directory looks beside each repository named, not beside the one the
+# caller stands in, and works from outside any repository.
+t_sweep_repo_names_where_to_look() {
+  make_project
+  local dir=$T/project.worktrees here=$T/here live
+  git init -q "$here"
+  git -C "$here" commit -q --allow-empty -m init
+  mkdir -p "$dir/gone" "$T/here.worktrees/theirs"
+
+  run sweep --repo "$T/project"
+  expect_rc 0
+  expect_out_mention "leftover $dir/gone"
+
+  out=$(cd "$here" && "$WORKTREE" sweep --repo "$T/project" 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  expect_out_mention "leftover $dir/gone"
+  [[ $out != *"theirs"* ]] || fail "looked beside the current repository: $out"
+
+  # Two spellings of one repository are one directory, so the second delete has nothing to trip on.
+  run sweep --apply --repo "$T/project" --repo "$T/project/"
+  expect_rc 0
+  [[ ! -e $dir ]] || fail "--apply left what it was pointed at: $out"
+  [[ -d $T/here.worktrees/theirs ]] || fail "--apply touched another repository's directory"
+
+  # A linked worktree names its repository.
+  live=$(cd "$T/project" && "$WORKTREE" create live 2>/dev/null)
+  mkdir "$dir/also-gone"
+  run sweep --repo "$live"
+  expect_rc 0
+  expect_out_mention "leftover $dir/also-gone"
+
+  # A repository with no place beside it is refused, and naming a directory still works.
+  git init -q --bare "$T/bare.git"
+  run sweep --repo "$T/bare.git"
+  expect_rc 1
+  expect_err "not the .git directory of a checkout"
+  run sweep --repo "$T/bare.git" "$T/here.worktrees"
+  expect_rc 0
+  expect_out_mention "leftover $T/here.worktrees/theirs"
+}
+
 # The flat layout workmux used before the shared root — <repo>__worktrees/<name>,
 # worktrees at depth 1 — is swept the same way when named: the live worktree is
 # kept, a leftover beside it is reported.
