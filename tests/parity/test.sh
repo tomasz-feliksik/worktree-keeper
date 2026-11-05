@@ -652,6 +652,121 @@ t_status_lists_every_worktree() {
   expect_err "no placement root"
 }
 
+# --- seed files ---------------------------------------------------------------
+
+# A project whose main branch declares .env and config/*.local, with both on disk, ignored,
+# beside an ignored file nobody chose and a tracked file that matches the pattern.
+make_seeded_project() {
+  make_project
+  local main=$T/project
+  printf '.env\nconfig/*.local\n' >"$main/.gitignore"
+  printf '.env\nconfig/*.local\ntracked.env\ndraft.txt\n' >"$main/.worktreeinclude"
+  echo tracked >"$main/tracked.env"
+  git -C "$main" add .gitignore .worktreeinclude tracked.env
+  git -C "$main" commit -q -m "declare seed files"
+  mkdir -p "$main/config"
+  echo secret >"$main/.env"
+  chmod 600 "$main/.env"
+  echo local >"$main/config/app.local"
+  echo chosen-by-nobody >"$main/other.log"
+  echo listed-but-not-ignored >"$main/draft.txt"
+  printf 'other.log\n' >>"$main/.git/info/exclude"
+}
+
+t_seed_copies_only_what_is_declared_and_ignored() {
+  make_seeded_project
+  git -C "$T/project" worktree add -q -b seeded "$T/wt-seeded" 2>/dev/null
+  run provision "$T/wt-seeded"
+  expect_rc 0
+  expect_out_mention "2 seed file"
+  [[ $(cat "$T/wt-seeded/.env") == secret ]] || fail ".env not copied"
+  [[ $(stat -c %a "$T/wt-seeded/.env") == 600 ]] || fail "a private file became readable: $(stat -c %a "$T/wt-seeded/.env")"
+  [[ $(cat "$T/wt-seeded/config/app.local") == local ]] || fail "a nested file was not copied"
+  [[ ! -e $T/wt-seeded/other.log ]] || fail "copied an ignored file nobody declared"
+  [[ ! -e $T/wt-seeded/draft.txt ]] || fail "copied a file git does not ignore"
+  [[ -z $(git -C "$T/wt-seeded" status --porcelain) ]] || fail "seeding dirtied the worktree"
+}
+
+t_seed_never_overwrites() {
+  make_seeded_project
+  git -C "$T/project" worktree add -q -b seeded "$T/wt-seeded" 2>/dev/null
+  echo mine >"$T/wt-seeded/.env"
+  run provision "$T/wt-seeded"
+  expect_rc 0
+  [[ $(cat "$T/wt-seeded/.env") == mine ]] || fail "seeding overwrote an existing file"
+  [[ $(cat "$T/wt-seeded/config/app.local") == local ]] || fail "one existing file stopped the rest"
+}
+
+# The list comes from the main checkout: a branch cannot widen what is copied into it.
+t_seed_ignores_a_list_the_branch_changed() {
+  make_seeded_project
+  git -C "$T/project" worktree add -q -b seeded "$T/wt-seeded" 2>/dev/null
+  printf 'other.log\n' >"$T/wt-seeded/.worktreeinclude"
+  git -C "$T/wt-seeded" commit -q -am "ask for more"
+  out=$(cd "$T/wt-seeded" && "$WORKTREE" provision . 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  [[ ! -e $T/wt-seeded/other.log ]] || fail "a branch's own list was obeyed"
+  [[ $(cat "$T/wt-seeded/.env") == secret ]] || fail "the main checkout's list was not obeyed"
+}
+
+# A branch can commit `config` as a symlink. Following it would write outside the worktree.
+t_seed_does_not_write_through_a_symlink() {
+  make_seeded_project
+  mkdir "$T/outside"
+  git -C "$T/project" worktree add -q --no-checkout -b seeded "$T/wt-seeded" 2>/dev/null
+  git -C "$T/wt-seeded" checkout -q
+  ln -s "$T/outside" "$T/wt-seeded/config"
+  run provision "$T/wt-seeded"
+  expect_rc 0
+  expect_out_mention "config"
+  [[ ! -e $T/outside/app.local ]] || fail "seeding wrote through a symlink"
+  [[ $(cat "$T/wt-seeded/.env") == secret ]] || fail "one refused file stopped the rest"
+}
+
+# Only regular files: a symlink in the main checkout could point at anything.
+t_seed_skips_a_symlink_source() {
+  make_seeded_project
+  rm "$T/project/.env"
+  ln -s /etc/hostname "$T/project/.env"
+  git -C "$T/project" worktree add -q -b seeded "$T/wt-seeded" 2>/dev/null
+  run provision "$T/wt-seeded"
+  expect_rc 0
+  [[ ! -e $T/wt-seeded/.env && ! -L $T/wt-seeded/.env ]] || fail "a symlink source was copied"
+}
+
+t_seed_failure_warns_and_exits_zero() {
+  make_seeded_project
+  git -C "$T/project" worktree add -q -b seeded "$T/wt-seeded" 2>/dev/null
+  chmod 000 "$T/project/.env"
+  run provision "$T/wt-seeded"
+  chmod 600 "$T/project/.env"
+  expect_rc 0
+  expect_out_mention ".env"
+  [[ ! -e $T/wt-seeded/.env ]] || fail "left a partial copy behind"
+  [[ $(cat "$T/wt-seeded/config/app.local") == local ]] || fail "one failure stopped the rest"
+
+  # The whole step failing: git cannot list the files.
+  git -C "$T/project" worktree add -q -b seeded-b "$T/wt-seeded-b" 2>/dev/null
+  local fake=$T/fake-bin real_git
+  real_git=$(command -v git)
+  mkdir -p "$fake"
+  printf '#!/usr/bin/env bash\ncase " $* " in *" ls-files "*) exit 128 ;; esac\nexec "%s" "$@"\n' "$real_git" >"$fake/git"
+  chmod +x "$fake/git"
+  out=$(PATH=$fake:$PATH "$WORKTREE" provision "$T/wt-seeded-b" 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  expect_out_mention "seed step FAILED"
+}
+
+# Provisioning the main checkout has nothing to copy from, and says nothing.
+t_seed_skips_the_main_checkout() {
+  make_seeded_project
+  run provision "$T/project"
+  expect_rc 0
+  [[ $out != *"seed"* && $err != *"seed"* ]] || fail "seeded the main checkout: $out $err"
+}
+
 # --- actor --------------------------------------------------------------------
 
 t_actor() {

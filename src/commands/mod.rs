@@ -7,5 +7,6 @@ pub mod guard;
 pub mod lock;
 pub mod provision;
 pub mod remove;
+pub mod seed;
 pub mod status;
 pub mod sweep;

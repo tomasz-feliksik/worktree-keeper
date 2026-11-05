@@ -1,5 +1,6 @@
-//! Submodules, then gated direnv trust, in the order they must run: a populated
-//! tree before anything reads it, and trust last so a broken tree is never trusted.
+//! Submodules, then seed files, then gated direnv trust, in the order they must run: a
+//! populated tree before anything reads it, and trust last so a broken tree is never
+//! trusted.
 //!
 //! Its callers' contract is that it never fails them: workmux's `post_create` is
 //! fail-fast, so a non-zero exit leaves a half-created worktree. So a step that fails
@@ -11,6 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::commands::seed;
 use crate::git::{Git, trimmed_path};
 use crate::outcome::{Outcome, Stop};
 use crate::paths;
@@ -29,6 +31,9 @@ pub fn run(path: &Path, sink: Sink) -> Outcome {
             sink,
             format_args!("submodule step FAILED, continuing: {stop}"),
         );
+    }
+    if let Err(stop) = seed::run(path, sink) {
+        say(sink, format_args!("seed step FAILED, continuing: {stop}"));
     }
     if let Err(stop) = direnv(path, sink) {
         say(
@@ -109,7 +114,7 @@ fn direnv(path: &Path, sink: Sink) -> Outcome {
     Ok(())
 }
 
-fn main_checkout(path: &Path) -> Outcome<Option<PathBuf>> {
+pub fn main_checkout(path: &Path) -> Outcome<Option<PathBuf>> {
     let common = Git::new(["rev-parse", "--path-format=absolute", "--git-common-dir"])
         .current_dir(path)
         .answer(path)?;
