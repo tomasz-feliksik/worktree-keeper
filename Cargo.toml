@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
 description = "Keeps agent git worktrees safe to create, inspect and remove"
+license = "MIT"
 publish = false
 
 [[bin]]

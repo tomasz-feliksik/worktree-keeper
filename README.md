@@ -10,3 +10,7 @@ until a real host has been deployed.
 - [Setup](./docs/setup.md): creating and cloning the repository, and its Nix structure
 - [Porting guide](./docs/porting-guide.md): how to port the Bash tool, and what it must keep doing
 - [JSON schema](./docs/json-schema.md): the output of `status --json` and `check --json`
+
+## Licence
+
+[MIT](./LICENSE)

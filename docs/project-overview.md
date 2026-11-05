@@ -153,7 +153,7 @@ The port first matched Bash, then fixed each of these as its own commit with a r
 | Home Manager options | `worktreeKeeper.*`                                                                  | Not `programs.*`, which Home Manager could claim later                                                                                 |
 | Name                 | `worktree-keeper`                                                                   | `awt` and `agent-worktree` are both taken by tools in this space                                                                       |
 | Binary name          | `worktree`                                                                          | Existing hooks and rules keep working                                                                                                  |
-| Licence              | Not chosen, so all rights are reserved until then                                   | The repository is public, and the licence is an open decision                                                                          |
+| Licence              | MIT                                                                                 | Short and permissive, which suits a tool this small. Chosen over Apache-2.0 and the dual licence on 2026-11-05                         |
 | Tracking             | Full beads database in this repository                                              | Same as other repositories, synced to `refs/dolt/data`                                                                                 |
 
 ### Testing
@@ -273,6 +273,4 @@ constraints, so a fix can land before cutover if there is a reason to.
 
 Each one is a `decision` bead, so `bd list --type=decision` shows the current state. The JSON schema, automatic locking
 and seed files were decided on 2026-11-05 as reversible defaults, and await the owner's review while nothing depends on
-them yet:
-
-1. Which licence should this repository have?
+them yet.
