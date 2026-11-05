@@ -1,16 +1,28 @@
 //! `worktree`: keeps agent git worktrees safe to create, inspect and remove.
 //!
-//! Skeleton only. The command surface is declared, and every command reports
-//! that it cannot act. See docs/porting-guide.md.
+//! See docs/porting-guide.md. Exit status: 0 done, 1 refused, 2 usage, 3 could not
+//! check. Nothing else may be returned.
 
+#[allow(dead_code)] // Reached as each command is ported.
+mod git;
+#[allow(dead_code)]
+mod outcome;
+#[allow(dead_code)]
+mod paths;
+#[allow(dead_code)]
+mod say;
+#[cfg(test)]
+mod testutil;
+#[allow(dead_code)]
+mod worktree;
+
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-/// The exit status for "could not check". An unimplemented command must never
-/// read as "done" or "safe to remove" to a caller such as a `pre_remove` hook.
-const CANNOT_TELL: u8 = 3;
+use outcome::{CannotTell, Outcome, Stop, exit_status};
 
 #[derive(Parser)]
 #[command(
@@ -60,8 +72,8 @@ enum Command {
     },
 }
 
-fn main() -> ExitCode {
-    let name = match Cli::parse().command {
+fn run(command: &Command) -> Outcome {
+    let name = match command {
         Command::Create { .. } => "create",
         Command::Provision { .. } => "provision",
         Command::Actor { .. } => "actor",
@@ -69,6 +81,16 @@ fn main() -> ExitCode {
         Command::Remove { .. } => "remove",
         Command::Sweep { .. } => "sweep",
     };
-    eprintln!("worktree: {name} is not implemented yet; nothing was done");
-    ExitCode::from(CANNOT_TELL)
+    Err(Stop::CannotTell(CannotTell::new(format!(
+        "worktree: {name} is not implemented yet; nothing was done"
+    ))))
+}
+
+fn main() -> ExitCode {
+    let outcome = run(&Cli::parse().command);
+    if let Err(stop) = &outcome {
+        // Nowhere left to report a failure to report, and the status still stands.
+        drop(writeln!(io::stderr(), "{stop}"));
+    }
+    ExitCode::from(exit_status(&outcome))
 }

@@ -543,24 +543,26 @@ t_sweep_relative_paths() {
   git -C "$live" status >/dev/null 2>&1 || fail "--apply cut a live worktree off from its repository"
 }
 
-# --help on every subcommand prints usage and acts on nothing. `create --help`
-# used to take `--help` as the branch name; any other leading dash is refused,
-# never read as a branch or a path.
+# --help on every subcommand prints usage and acts on nothing, and a mistyped
+# option is refused as usage. `create --help` used to take `--help` as the branch
+# name; a leading dash is never read as a branch or a path.
 t_help_never_acts() {
   make_project
   local sub
   for sub in create provision actor guard remove sweep; do
     out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" "$sub" --help 2>"$SCRATCH/stderr") && rc=0 || rc=$?
     err=$(cat "$SCRATCH/stderr")
+    expect_rc 0
+    [[ $out == *"Usage: worktree $sub"* ]] || fail "$sub --help did not print its usage: $out"
+    out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" "$sub" --bogus 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+    err=$(cat "$SCRATCH/stderr")
     expect_rc 2
-    expect_err "usage: worktree create"
+    expect_err "--bogus"
   done
-  [[ ! -e $T/root ]] || fail "create --help placed something under the root"
-  [[ -z $(git -C "$T/project" branch --list -- '-*') ]] || fail "create --help made a branch"
-  out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" create --bogus 2>"$SCRATCH/stderr") && rc=0 || rc=$?
-  err=$(cat "$SCRATCH/stderr")
-  expect_rc 1
-  expect_err "create: unknown option --bogus"
+  [[ ! -e $T/root ]] || fail "--help or a mistyped option placed something under the root"
+  [[ -z $(git -C "$T/project" branch --list -- '-*') ]] || fail "--help or a mistyped option made a branch"
+  [[ $(git -C "$T/project" worktree list --porcelain | grep -c '^worktree ') -eq 1 ]] ||
+    fail "--help or a mistyped option registered a worktree"
 }
 
 # --- runner -------------------------------------------------------------------
