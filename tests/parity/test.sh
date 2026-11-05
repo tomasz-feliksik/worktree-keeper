@@ -1034,6 +1034,7 @@ t_remove_tidies_the_empty_directory() {
   run remove --keep-branch "$two"
   expect_rc 0
   [[ -f $dir/notes ]] || fail "removal deleted what the user put in the directory"
+  [[ $out != *"could not remove"* ]] || fail "warned about a directory that is simply not empty: $out"
   rm "$dir/notes"
   local three
   three=$(cd "$T/project" && "$WORKTREE" create three 2>/dev/null)
@@ -1041,6 +1042,19 @@ t_remove_tidies_the_empty_directory() {
   expect_rc 0
   expect_out_mention "removed empty $dir"
   [[ ! -e $dir ]] || fail "the empty directory stayed"
+
+  # A directory that cannot be removed warns, and the removal has still succeeded.
+  if [[ $EUID -ne 0 ]]; then
+    local stuck
+    stuck=$(cd "$T/project" && "$WORKTREE" create stuck 2>/dev/null)
+    chmod 555 "$T"
+    run remove --keep-branch "$stuck"
+    chmod 755 "$T"
+    expect_rc 0
+    expect_out_mention "could not remove $dir"
+    [[ ! -e $stuck ]] || fail "the worktree was not removed"
+    rmdir "$dir"
+  fi
 
   git -C "$T/project" branch taken
   git -C "$T/project" worktree add -q "$T/holds-taken" taken 2>/dev/null
@@ -1216,6 +1230,13 @@ t_sweep_defaults_to_this_repository() {
   out=$(cd "$T/project" && "$WORKTREE" sweep --apply 2>/dev/null) && rc=0 || rc=$?
   expect_rc 0
   [[ ! -e $dir ]] || fail "--apply left the empty directory"
+
+  # Only a directory named as this tool names one is tidied.
+  mkdir "$T/kept" "$T/other.worktrees"
+  run sweep --apply "$T/kept" "$T/other.worktrees"
+  expect_rc 0
+  [[ -d $T/kept ]] || fail "--apply removed an empty directory it does not own"
+  [[ ! -e $T/other.worktrees ]] || fail "--apply left a named empty worktrees directory"
 
   run sweep
   expect_rc 1
