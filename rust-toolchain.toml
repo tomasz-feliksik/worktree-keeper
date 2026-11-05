@@ -1,0 +1,4 @@
+# For rustup users. The Nix build takes `stable` from fenix, pinned by flake.lock.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt", "rust-src", "rust-analyzer"]
