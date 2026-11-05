@@ -13,6 +13,8 @@ SCRATCH=$(mktemp -d)
 trap 'rm -rf "$SCRATCH"' EXIT
 
 export HOME=$SCRATCH/home GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=$SCRATCH/gitconfig
+# A real placement root in the caller's environment must never be what a test reaches.
+unset WORKTREE_ROOT
 mkdir -p "$HOME"
 git config --global user.name test
 git config --global user.email test@example.invalid
@@ -38,6 +40,9 @@ run() {
 }
 expect_rc() {
   [[ $rc -eq $1 ]] || fail "expected exit $1, got $rc — stdout: $out — stderr: $err"
+}
+expect_out_mention() {
+  [[ $out == *"$1"* ]] || fail "stdout does not mention '$1': $out"
 }
 expect_err() {
   [[ $err == *"$1"* ]] || fail "stderr does not mention '$1': $err"
@@ -107,6 +112,40 @@ t_unpushed_populated_submodule() {
   expect_err "holds commits no remote has"
   expect_err "modules/sub"
   [[ -e $WT/sub/.git ]] || fail "guard deinitialised a submodule it refused to clear"
+}
+
+# --force covers only the worktree's own uncommitted changes: an unpushed
+# submodule commit is refused under it, on remove and on guard alike.
+t_unpushed_refused_under_force() {
+  make_project
+  make_worktree forced
+  git -C "$WT/sub" checkout -q -b work
+  echo change >>"$WT/sub/README"
+  git -C "$WT/sub" commit -q -am "unpushed in sub"
+  run guard --force "$WT"
+  expect_rc 1
+  expect_err "holds commits no remote has"
+  run remove --force "$WT"
+  expect_rc 1
+  expect_err "holds commits no remote has"
+  [[ -e $WT/sub/README ]] || fail "--force emptied a submodule holding an unpushed commit"
+}
+
+# Removing one worktree must not cost ANOTHER worktree's clones. `git worktree
+# prune` works on the whole repository, so a different registration whose directory
+# is gone would lose an unpushed submodule clone that sweep refuses to touch.
+t_remove_keeps_other_stale_registrations() {
+  make_project
+  make_worktree stale-other
+  git -C "$WT/sub" checkout -q -b work
+  echo change >>"$WT/sub/README"
+  git -C "$WT/sub" commit -q -am "unpushed, in the only copy"
+  local stale_gitdir=$WTGIT
+  rm -rf "$WT"
+  make_worktree bystander
+  run remove "$WT"
+  expect_rc 0
+  [[ -d $stale_gitdir/modules/sub ]] || fail "removing another worktree pruned the unpushed clone"
 }
 
 # An unpushed commit on a DETACHED head — the normal state of a submodule, and
@@ -188,6 +227,7 @@ t_guard_never_removes() {
   make_worktree keep
   run guard "$WT"
   expect_rc 0
+  expect_out_mention "emptied 1 submodule"
   [[ -d $WT ]] || fail "guard removed the worktree directory"
   git -C "$T/project" worktree list --porcelain | grep -q "^worktree $WT\$" ||
     fail "guard unregistered the worktree"
@@ -212,6 +252,111 @@ t_remove_branch_disposition() {
   expect_err "not merged"
   git -C "$T/project" show-ref --verify --quiet refs/heads/unmerged ||
     fail "unmerged branch was deleted without --force"
+}
+
+# "Refused" means nothing happened. The unmerged branch is found before anything is
+# deleted: the worktree and its submodule stay. --keep-branch and --force skip it.
+t_unmerged_refusal_changes_nothing() {
+  make_project
+  make_worktree half
+  echo change >>"$WT/README"
+  git -C "$WT" commit -q -am "unmerged work"
+  run remove "$WT"
+  expect_rc 1
+  expect_err "not merged"
+  [[ -f $WT/README ]] || fail "the worktree was removed before refusing"
+  [[ -e $WT/sub/README ]] || fail "the submodule was emptied before refusing"
+  [[ -d $WTGIT/modules ]] || fail "the submodule clones were cleared before refusing"
+  [[ $(git -C "$WT" branch --show-current) == half ]] || fail "the worktree was detached before refusing"
+
+  # git's own rule: merged into the upstream counts, although HEAD lacks it.
+  git -C "$WT" push -q -u origin half 2>/dev/null
+  run remove --keep-branch "$WT"
+  expect_rc 0
+  git -C "$T/project" show-ref --verify --quiet refs/heads/half || fail "--keep-branch deleted the branch"
+
+  make_worktree pushed
+  echo change >>"$WT/README"
+  git -C "$WT" commit -q -am "pushed, not merged locally"
+  git -C "$WT" push -q -u origin pushed 2>/dev/null
+  run remove "$WT"
+  expect_rc 0
+  [[ ! -e $WT ]] || fail "a branch merged into its upstream was refused"
+
+  make_worktree discarded
+  echo change >>"$WT/README"
+  git -C "$WT" commit -q -am "to discard"
+  run remove --force "$WT"
+  expect_rc 0
+  git -C "$T/project" show-ref --verify --quiet refs/heads/discarded && fail "--force kept the branch"
+}
+
+# The remote branch goes last and only on request: kept when the local deletion
+# refuses, kept without --delete-remote, deleted with it, from the branch's own
+# remote rather than always from origin.
+t_remote_branch_deleted_last() {
+  make_project
+  local has_remote_branch
+  has_remote_branch() { git -C "$T/project.git" show-ref --verify --quiet "refs/heads/$1"; }
+
+  make_worktree unmerged
+  echo change >>"$WT/README"
+  git -C "$WT" commit -q -am "unmerged"
+  git -C "$WT" push -q -u origin unmerged 2>/dev/null
+  # Merged to nothing: `branch -d` checks HEAD and the upstream, so take the upstream away.
+  git -C "$WT" branch --unset-upstream
+  run remove --delete-remote "$WT"
+  expect_rc 1
+  has_remote_branch unmerged || fail "the remote branch went although the local deletion refused"
+
+  # Past the unmerged check, so that only the order protects the remote: a lock on the
+  # ref makes the local deletion itself fail.
+  make_worktree locked-ref
+  git -C "$WT" push -q -u origin locked-ref 2>/dev/null
+  touch "$T/project/.git/refs/heads/locked-ref.lock"
+  run remove --delete-remote "$WT"
+  rm "$T/project/.git/refs/heads/locked-ref.lock"
+  expect_rc 1
+  has_remote_branch locked-ref || fail "the remote branch went before the local deletion failed"
+
+  make_worktree plain
+  git -C "$WT" push -q -u origin plain 2>/dev/null
+  run remove "$WT"
+  expect_rc 0
+  has_remote_branch plain || fail "the remote branch was deleted without --delete-remote"
+
+  make_worktree asked
+  git -C "$WT" push -q -u origin asked 2>/dev/null
+  run remove --delete-remote "$WT"
+  expect_rc 0
+  has_remote_branch asked && fail "--delete-remote did not delete the remote branch"
+  git -C "$T/project" show-ref --verify --quiet refs/heads/asked && fail "the local branch survived"
+
+  make_worktree absent
+  run remove --delete-remote "$WT"
+  expect_rc 0
+  expect_out_mention "has no branch absent"
+
+  git -C "$T/project" remote add other "$T/project.git"
+  make_worktree elsewhere
+  git -C "$WT" push -q -u other elsewhere 2>/dev/null
+  git -C "$T/project" remote rename origin old-origin
+  run remove --delete-remote "$WT"
+  expect_rc 0
+  has_remote_branch elsewhere && fail "the branch's own remote was not the one asked"
+  git -C "$T/project" remote rename old-origin origin
+}
+
+# A remote that cannot answer is not a remote with no such branch.
+t_unreachable_remote_is_could_not_tell() {
+  make_project
+  make_worktree away
+  git -C "$WT" push -q -u origin away 2>/dev/null
+  git -C "$T/project" remote set-url origin "$T/nowhere.git"
+  run remove --delete-remote "$WT"
+  expect_rc 3
+  expect_err "cannot inspect origin"
+  git -C "$T/project.git" show-ref --verify --quiet refs/heads/away || fail "the branch left the remote"
 }
 
 # A top-level submodule in a SUBDIRECTORY is still top-level. The guard used to
@@ -357,6 +502,427 @@ t_guard_reads_workmux_env() {
   [[ $out == *"$WT may be removed"* ]] || fail "guard did not act on WM_WORKTREE_PATH: $out"
 }
 
+# --- questions ----------------------------------------------------------------
+
+# Everything a question could touch, by path, mtime, size and mode.
+tree_state() {
+  find "$@" -printf '%p %T@ %s %m\n' 2>/dev/null | sort
+}
+
+# check changes nothing on disk, even where guard would clear metadata. The file is
+# touched first, so that a plain `git status` would rewrite the index.
+t_check_changes_nothing() {
+  make_project
+  make_worktree asked
+  touch "$WT/README" "$WT/sub/README"
+  local before after
+  before=$(tree_state "$WT" "$WTGIT")
+  run check "$WT"
+  expect_rc 0
+  expect_out_mention "may be removed"
+  after=$(tree_state "$WT" "$WTGIT")
+  [[ $before == "$after" ]] || fail "check changed the disk:"$'\n'"$(diff <(echo "$before") <(echo "$after") | head -20)"
+  run guard "$WT"
+  expect_rc 0
+  [[ ! -d $WTGIT/modules ]] || fail "setup: guard should have cleared what check left"
+}
+
+# status changes nothing either, and that includes a stranded worktree it has to verify.
+t_status_changes_nothing() {
+  make_project
+  make_worktree looked
+  touch "$WT/README" "$WT/sub/README"
+  local before after
+  before=$(tree_state "$WT" "$WTGIT")
+  run status "$WT"
+  expect_rc 0
+  after=$(tree_state "$WT" "$WTGIT")
+  [[ $before == "$after" ]] || fail "status changed the disk:"$'\n'"$(diff <(echo "$before") <(echo "$after") | head -20)"
+}
+
+# check and guard give the same answer in every state, because they are the same code.
+t_check_agrees_with_guard() {
+  make_project
+  local state check_rc guard_rc
+  for state in clean dirty dirty_sub unpushed main; do
+    make_worktree "agree-$state"
+    case $state in
+    dirty) echo x >"$WT/scratch" ;;
+    dirty_sub) echo x >>"$WT/sub/README" ;;
+    unpushed)
+      git -C "$WT/sub" checkout -q -b work
+      echo x >>"$WT/sub/README"
+      git -C "$WT/sub" commit -q -am unpushed
+      ;;
+    main) WT=$T/project ;;
+    esac
+    run check "$WT"
+    check_rc=$rc
+    run guard "$WT"
+    guard_rc=$rc
+    [[ $check_rc -eq $guard_rc ]] || fail "$state: check exited $check_rc, guard exited $guard_rc"
+    [[ $state == clean || $check_rc -ne 0 ]] || fail "$state: check said removable"
+  done
+  make_worktree agree-garbage
+  git -C "$WT" submodule -q deinit -f --all 2>/dev/null
+  echo garbage >"$WTGIT/modules/sub/HEAD"
+  run check "$WT"
+  expect_rc 3
+  expect_err "cannot inspect"
+}
+
+# A process inside the worktree is named and refuses removal, under --force too. The
+# caller's own process and its ancestors do not count. --ignore-in-use lets through.
+t_in_use_refuses_and_names_the_process() {
+  make_project
+  make_worktree busy
+  (cd "$WT" && exec sleep 300) >/dev/null 2>&1 &
+  local holder=$!
+  local sub
+  for sub in check guard; do
+    run "$sub" "$WT"
+    expect_rc 1
+    expect_err "in use by sleep (pid $holder)"
+    run "$sub" --force "$WT"
+    expect_rc 1
+    expect_err "in use by sleep"
+  done
+  run remove --force "$WT"
+  expect_rc 1
+  expect_err "in use by sleep"
+  [[ -e $WT/sub/README ]] || fail "a refused removal emptied the submodule"
+  run status "$WT"
+  expect_rc 0
+  [[ $out == *"refused"* && $out == *"in_use"* ]] || fail "status did not report the process: $out"
+  run check --ignore-in-use "$WT"
+  expect_rc 0
+  kill "$holder"
+  wait "$holder" 2>/dev/null
+
+  # The caller's own shell, sitting in the worktree, is not a holder.
+  out=$(cd "$WT" && bash -c '"$WORKTREE" check "$PWD"' 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  run remove "$WT"
+  expect_rc 0
+}
+
+# A locked worktree is refused naming the reason, under --force too, until unlocked.
+t_lock_refuses_until_unlocked() {
+  make_project
+  make_worktree held
+  run lock --reason "agent-7 is working here" "$WT"
+  expect_rc 0
+  [[ -f $WTGIT/locked ]] || fail "lock did not use git worktree lock"
+  local sub
+  for sub in check guard; do
+    run "$sub" --force "$WT"
+    expect_rc 1
+    expect_err "agent-7 is working here"
+  done
+  run remove --force "$WT"
+  expect_rc 1
+  expect_err "agent-7 is working here"
+  [[ -e $WT/sub/README ]] || fail "a refused removal emptied the submodule"
+  run lock "$WT"
+  expect_rc 1
+  run unlock "$WT"
+  expect_rc 0
+  [[ ! -f $WTGIT/locked ]] || fail "unlock did not release it"
+  run remove "$WT"
+  expect_rc 0
+  run unlock "$T/project"
+  expect_rc 1
+  expect_err "main worktree"
+}
+
+# A commit on a new file, in the worktree or the main checkout.
+commit_file() {
+  echo "$3" >"$1/$2"
+  git -C "$1" add "$2"
+  git -C "$1" commit -q -m "$2"
+}
+
+# Squashed or rebased, the branch's content is in the target although its commits are not,
+# so it goes without --force. Anything the target lacks keeps it, with nothing changed.
+t_integrated_branch_is_deleted() {
+  make_project
+  local main=$T/project
+  has_branch() { git -C "$main" show-ref --verify --quiet "refs/heads/$1"; }
+
+  make_worktree squashed
+  commit_file "$WT" one 1
+  commit_file "$WT" two 2
+  git -C "$main" merge -q --squash squashed
+  git -C "$main" commit -q -m "squashed"
+  run remove "$WT"
+  expect_rc 0
+  expect_out_mention "squash-merged or rebased"
+  [[ ! -e $WT ]] || fail "a squash-merged worktree was not removed"
+  has_branch squashed && fail "a squash-merged branch was kept"
+
+  make_worktree rebased
+  commit_file "$WT" three 3
+  commit_file "$main" elsewhere x
+  git -C "$main" cherry-pick rebased >/dev/null
+  run remove "$WT"
+  expect_rc 0
+  has_branch rebased && fail "a rebased branch was kept"
+
+  # With an upstream it is not ancestor of, squashed into the main checkout all the same.
+  make_worktree upstreamed
+  commit_file "$WT" pushed p
+  git -C "$WT" push -q -u origin upstreamed 2>/dev/null
+  commit_file "$WT" unpushed u
+  git -C "$main" merge -q --squash upstreamed
+  git -C "$main" commit -q -m "squashed"
+  run remove "$WT"
+  expect_rc 0
+  has_branch upstreamed && fail "a branch squashed into the main checkout was kept"
+
+  # One more commit after the squash: the target lacks it.
+  make_worktree added-to
+  commit_file "$WT" four 4
+  git -C "$main" merge -q --squash added-to
+  git -C "$main" commit -q -m "squashed"
+  commit_file "$WT" five 5
+  run remove "$WT"
+  expect_rc 1
+  expect_err "not merged"
+  [[ -f $WT/five ]] || fail "unintegrated work was removed"
+  has_branch added-to || fail "a branch with unintegrated work was deleted"
+
+  # Squashed, then reverted: merging would bring it back, so the target lacks it.
+  make_worktree reverted
+  commit_file "$WT" six 6
+  git -C "$main" merge -q --squash reverted
+  git -C "$main" commit -q -m "squashed"
+  git -C "$main" revert --no-edit HEAD >/dev/null
+  run remove "$WT"
+  expect_rc 1
+  has_branch reverted || fail "a reverted branch was deleted"
+
+  # The target has moved on over the same lines: a conflict cannot show the content is there.
+  make_worktree conflicting
+  commit_file "$WT" seven 7
+  git -C "$main" merge -q --squash conflicting
+  git -C "$main" commit -q -m "squashed"
+  commit_file "$main" seven changed
+  run remove "$WT"
+  expect_rc 1
+  has_branch conflicting || fail "a branch that conflicts was deleted"
+
+  # --keep-branch keeps it, whatever the state.
+  make_worktree kept
+  commit_file "$WT" eight 8
+  git -C "$main" merge -q --squash kept
+  git -C "$main" commit -q -m "squashed"
+  run remove --keep-branch "$WT"
+  expect_rc 0
+  has_branch kept || fail "--keep-branch deleted an integrated branch"
+}
+
+# A question writes no objects, though merge-tree writes them. A colon in the path must not
+# split the list of object directories it reads from.
+t_status_of_an_integrated_branch_writes_nothing() {
+  make_project
+  git clone -q --recurse-submodules "$T/project.git" "$T/co:lon" 2>/dev/null
+  local main=$T/co:lon before after
+  git -C "$main" worktree add -q -b asked "$T/wt-asked" 2>/dev/null
+  commit_file "$T/wt-asked" one 1
+  git -C "$main" merge -q --squash asked
+  git -C "$main" commit -q -m "squashed"
+  before=$(find "$main/.git/objects" | sort)
+  run status --json "$T/wt-asked"
+  expect_rc 0
+  expect_out_mention '"merged": true'
+  expect_out_mention '"verdict": "removable"'
+  after=$(find "$main/.git/objects" | sort)
+  [[ $before == "$after" ]] || fail "status wrote objects:"$'\n'"$(diff <(echo "$before") <(echo "$after") | head)"
+
+  # Not integrated is the case with a new tree to write: the merge would change something.
+  git -C "$main" worktree add -q -b unmerged "$T/wt-unmerged" 2>/dev/null
+  commit_file "$T/wt-unmerged" two 2
+  commit_file "$main" elsewhere x
+  before=$(find "$main/.git/objects" | sort)
+  run status --json "$T/wt-unmerged"
+  expect_rc 0
+  expect_out_mention '"merged": false'
+  after=$(find "$main/.git/objects" | sort)
+  [[ $before == "$after" ]] || fail "status wrote objects:"$'\n'"$(diff <(echo "$before") <(echo "$after") | head)"
+}
+
+# status reads each clone for commits no remote has, and refuses on them.
+t_status_reports_unpushed_commits() {
+  make_project
+  make_worktree holding
+  run status --json "$WT"
+  expect_rc 0
+  expect_out_mention '"unpushed": false'
+  expect_out_mention '"verdict": "removable"'
+  git -C "$WT/sub" checkout -q -b work
+  echo x >>"$WT/sub/README"
+  git -C "$WT/sub" commit -q -am unpushed
+  run status --json "$WT"
+  expect_rc 0
+  expect_out_mention '"unpushed": true'
+  expect_out_mention '"kind": "unpushed_submodule"'
+}
+
+# Every worktree under the root gets a verdict; an orphan is unknown, never safe, and
+# makes the exit status 3. Nothing is deleted.
+t_status_lists_every_worktree() {
+  make_project
+  local root=$T/root safe busy created
+  safe=$(cd "$T/project" && WORKTREE_ROOT=$root "$WORKTREE" create safe-one 2>/dev/null)
+  busy=$(cd "$T/project" && WORKTREE_ROOT=$root "$WORKTREE" create dirty-one 2>/dev/null)
+  echo x >"$busy/scratch"
+  out=$(WORKTREE_ROOT=$root "$WORKTREE" status 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  [[ $out == *"removable"*"$safe"* ]] || fail "the clean worktree is not removable: $out"
+  [[ $out == *"refused"*"$busy"*"dirty"* ]] || fail "the dirty worktree is not refused: $out"
+
+  mkdir -p "$root/project/orphan"
+  echo "gitdir: $T/nowhere" >"$root/project/orphan/.git"
+  out=$(WORKTREE_ROOT=$root "$WORKTREE" status 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 3
+  [[ $out == *"unknown"*"$root/project/orphan"* ]] || fail "an orphan is not unknown: $out"
+  [[ -f $busy/scratch && -d $root/project/orphan ]] || fail "status deleted something"
+
+  out=$(env -u WORKTREE_ROOT "$WORKTREE" status 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 1
+  expect_err "no placement root"
+}
+
+# --- seed files ---------------------------------------------------------------
+
+# A project whose main branch declares .env and config/*.local, with both on disk, ignored,
+# beside an ignored file nobody chose and a tracked file that matches the pattern.
+make_seeded_project() {
+  make_project
+  local main=$T/project
+  printf '.env\nconfig/*.local\n' >"$main/.gitignore"
+  printf '.env\nconfig/*.local\ntracked.env\ndraft.txt\n' >"$main/.worktreeinclude"
+  echo tracked >"$main/tracked.env"
+  git -C "$main" add .gitignore .worktreeinclude tracked.env
+  git -C "$main" commit -q -m "declare seed files"
+  mkdir -p "$main/config"
+  echo secret >"$main/.env"
+  chmod 600 "$main/.env"
+  echo local >"$main/config/app.local"
+  echo chosen-by-nobody >"$main/other.log"
+  echo listed-but-not-ignored >"$main/draft.txt"
+  printf 'other.log\n' >>"$main/.git/info/exclude"
+}
+
+t_seed_copies_only_what_is_declared_and_ignored() {
+  make_seeded_project
+  git -C "$T/project" worktree add -q -b seeded "$T/wt-seeded" 2>/dev/null
+  run provision "$T/wt-seeded"
+  expect_rc 0
+  expect_out_mention "2 seed file"
+  [[ $(cat "$T/wt-seeded/.env") == secret ]] || fail ".env not copied"
+  [[ $(stat -c %a "$T/wt-seeded/.env") == 600 ]] || fail "a private file became readable: $(stat -c %a "$T/wt-seeded/.env")"
+  [[ $(cat "$T/wt-seeded/config/app.local") == local ]] || fail "a nested file was not copied"
+  [[ ! -e $T/wt-seeded/other.log ]] || fail "copied an ignored file nobody declared"
+  [[ ! -e $T/wt-seeded/draft.txt ]] || fail "copied a file git does not ignore"
+  [[ -z $(git -C "$T/wt-seeded" status --porcelain) ]] || fail "seeding dirtied the worktree"
+}
+
+t_seed_never_overwrites() {
+  make_seeded_project
+  git -C "$T/project" worktree add -q -b seeded "$T/wt-seeded" 2>/dev/null
+  echo mine >"$T/wt-seeded/.env"
+  run provision "$T/wt-seeded"
+  expect_rc 0
+  [[ $(cat "$T/wt-seeded/.env") == mine ]] || fail "seeding overwrote an existing file"
+  [[ $(cat "$T/wt-seeded/config/app.local") == local ]] || fail "one existing file stopped the rest"
+}
+
+# The list comes from the main checkout: a branch cannot widen what is copied into it.
+t_seed_ignores_a_list_the_branch_changed() {
+  make_seeded_project
+  git -C "$T/project" worktree add -q -b seeded "$T/wt-seeded" 2>/dev/null
+  printf 'other.log\n' >"$T/wt-seeded/.worktreeinclude"
+  git -C "$T/wt-seeded" commit -q -am "ask for more"
+  out=$(cd "$T/wt-seeded" && "$WORKTREE" provision . 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  [[ ! -e $T/wt-seeded/other.log ]] || fail "a branch's own list was obeyed"
+  [[ $(cat "$T/wt-seeded/.env") == secret ]] || fail "the main checkout's list was not obeyed"
+}
+
+# A branch can commit `config` as a symlink. Following it would write outside the worktree.
+t_seed_does_not_write_through_a_symlink() {
+  make_seeded_project
+  mkdir "$T/outside"
+  git -C "$T/project" worktree add -q --no-checkout -b seeded "$T/wt-seeded" 2>/dev/null
+  git -C "$T/wt-seeded" checkout -q
+  ln -s "$T/outside" "$T/wt-seeded/config"
+  run provision "$T/wt-seeded"
+  expect_rc 0
+  expect_out_mention "config"
+  [[ ! -e $T/outside/app.local ]] || fail "seeding wrote through a symlink"
+  [[ $(cat "$T/wt-seeded/.env") == secret ]] || fail "one refused file stopped the rest"
+}
+
+# Only regular files: a symlink in the main checkout could point at anything.
+t_seed_skips_a_symlink_source() {
+  make_seeded_project
+  rm "$T/project/.env"
+  ln -s /etc/hostname "$T/project/.env"
+  git -C "$T/project" worktree add -q -b seeded "$T/wt-seeded" 2>/dev/null
+  run provision "$T/wt-seeded"
+  expect_rc 0
+  [[ ! -e $T/wt-seeded/.env && ! -L $T/wt-seeded/.env ]] || fail "a symlink source was copied"
+}
+
+t_seed_failure_warns_and_exits_zero() {
+  make_seeded_project
+  git -C "$T/project" worktree add -q -b seeded "$T/wt-seeded" 2>/dev/null
+  # root reads through mode 000, so the unreadable half only holds for anyone else.
+  chmod 000 "$T/project/.env"
+  run provision "$T/wt-seeded"
+  chmod 600 "$T/project/.env"
+  expect_rc 0
+  if [[ $EUID -ne 0 ]]; then
+    expect_out_mention ".env"
+    [[ ! -e $T/wt-seeded/.env ]] || fail "left a partial copy behind"
+  fi
+  [[ $(cat "$T/wt-seeded/config/app.local") == local ]] || fail "one failure stopped the rest"
+
+  # The target cannot be written: not the same as already existing, so it has to warn.
+  git -C "$T/project" worktree add -q -b seeded-ro "$T/wt-seeded-ro" 2>/dev/null
+  rm -rf "$T/wt-seeded-ro/.gitmodules" "$T/wt-seeded-ro/sub"
+  chmod 555 "$T/wt-seeded-ro"
+  run provision "$T/wt-seeded-ro"
+  chmod 755 "$T/wt-seeded-ro"
+  expect_rc 0
+  if [[ $EUID -ne 0 ]]; then
+    expect_out_mention "not copying .env"
+  fi
+
+  # The whole step failing: git cannot list the files.
+  git -C "$T/project" worktree add -q -b seeded-b "$T/wt-seeded-b" 2>/dev/null
+  # A corrupt index in the main checkout: real, so it works on a wrapped binary too, whose
+  # own git comes ahead of anything put on PATH.
+  echo garbage >"$T/project/.git/index"
+  run provision "$T/wt-seeded-b"
+  expect_rc 0
+  expect_out_mention "seed step FAILED"
+}
+
+# Provisioning the main checkout has nothing to copy from, and says nothing.
+t_seed_skips_the_main_checkout() {
+  make_seeded_project
+  run provision "$T/project"
+  expect_rc 0
+  [[ $out != *"seed"* && $err != *"seed"* ]] || fail "seeded the main checkout: $out $err"
+}
+
 # --- actor --------------------------------------------------------------------
 
 t_actor() {
@@ -396,6 +962,63 @@ t_create_places_and_provisions() {
   [[ -e $T/root/project/feat-place/sub/nested/.git ]] || fail "create did not provision nested submodules"
 }
 
+# workmux's post_create is fail-fast, so a failed `direnv allow` warns and exits 0,
+# and create still hands back the path. A path that is not a directory stays exit 1.
+t_provision_never_fails_its_caller() {
+  make_project
+  local xdg=$T/xdg
+  mkdir -p "$xdg"
+  echo 'export FOO=1' >"$T/project/.envrc"
+  git -C "$T/project" add .envrc
+  git -C "$T/project" commit -q -m envrc
+  git -C "$T/project" worktree add -q -b failing "$T/wt-failing" 2>/dev/null
+  (cd "$T/project" && XDG_DATA_HOME=$xdg direnv allow . >/dev/null 2>&1)
+  # The main checkout stays allowed, and no new allowance can be written: a real failure,
+  # so it works on a wrapped binary too, whose own direnv comes ahead of anything on PATH.
+  chmod 555 "$xdg/direnv/allow"
+  out=$(XDG_DATA_HOME=$xdg "$WORKTREE" provision "$T/wt-failing" 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  if [[ $EUID -ne 0 ]]; then
+    [[ $out == *"FAILED"* ]] || fail "a failed direnv allow did not warn: $out"
+    [[ $out != *"worktree .envrc allowed"* ]] || fail "a failed direnv allow claimed trust: $out"
+  fi
+  out=$(cd "$T/project" && XDG_DATA_HOME=$xdg WORKTREE_ROOT=$T/root "$WORKTREE" create failing-create 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  chmod 755 "$xdg/direnv/allow"
+  expect_rc 0
+  [[ $out == "$T/root/project/failing-create" ]] || fail "create did not hand back the path: $out"
+  run provision "$T/no-such-directory"
+  expect_rc 1
+  expect_err "is not a directory"
+}
+
+# feat/x and feat-x share a slug. Asking for the second must refuse, naming both,
+# rather than hand back a worktree on the first. Asking again for the first still
+# returns its path; a directory that is no worktree at all is refused too.
+t_create_refuses_a_slug_collision() {
+  make_project
+  local first=$T/root/project/feat-x created
+  created=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" create feat/x 2>/dev/null)
+  [[ $created == "$first" ]] || fail "setup: placed at '$created'"
+  out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" create feat-x 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 1
+  expect_err "feat/x"
+  expect_err "feat-x"
+  [[ -z $out ]] || fail "a refused create printed a path: $out"
+  out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" create feat/x 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  [[ $out == "$first" ]] || fail "the same branch did not get its path back: $out"
+  mkdir -p "$T/root-outside/project/not-git"
+  out=$(cd "$T/project" && WORKTREE_ROOT=$T/root-outside "$WORKTREE" create not/git 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 1
+  expect_err "not a worktree"
+  [[ -z $out ]] || fail "a refused create printed a path: $out"
+}
+
 t_direnv_gate() {
   command -v direnv >/dev/null || {
     fail "direnv not on PATH — the test environment is incomplete"
@@ -417,6 +1040,7 @@ t_direnv_gate() {
   run provision "$repo-b"
   (cd "$repo-b" && direnv status | grep -Eq '^Found RC allowed (0|true)$') ||
     fail "worktree not trusted although byte-identical to an allowed root"
+  [[ $out == *"worktree .envrc allowed"* ]] || fail "a working direnv allow was not reported: $out"
 
   # Never further than the root's own trust. A branch whose .envrc differs
   # from the allowed root copy is not trusted: those bytes were never read.
@@ -465,9 +1089,11 @@ t_sweep() {
   [[ $out == *"leftover $root/empty-group"* ]] || fail "empty group not reported: $out"
   [[ $out == *"orphan   $root/project/orphan"* ]] || fail "orphan not reported: $out"
   [[ -d $root/project/gone-worktree ]] || fail "dry run deleted a leftover"
+  expect_out_mention "dry run"
 
   run sweep --apply "$root"
   expect_rc 0
+  [[ $out != *"dry run"* ]] || fail "--apply called itself a dry run: $out"
   [[ ! -e $root/project/gone-worktree ]] || fail "--apply did not delete the leftover"
   [[ ! -e $root/empty-group ]] || fail "--apply did not delete the empty group"
   [[ -f $root/project/orphan/work ]] || fail "--apply deleted an orphan's files"
@@ -512,6 +1138,19 @@ t_sweep_stale_registration() {
   [[ ! -d $WTGIT ]] || fail "a stale registration with nothing unpushed was not pruned"
 }
 
+# A locked registration is left alone even when its directory is gone: it may be
+# on removable media, and `git worktree prune` leaves it too.
+t_sweep_leaves_locked_registrations() {
+  make_project
+  make_worktree locked-reg
+  git -C "$T/project" worktree lock --reason "on a removable disk" "$WT"
+  rm -rf "$WT"
+  run sweep --apply --repo "$T/project" "$T/empty-root"
+  expect_rc 0
+  [[ -d $WTGIT ]] || fail "--apply pruned a locked registration"
+  [[ $out != *"pruned"* ]] || fail "reported pruning a locked registration: $out"
+}
+
 # With worktree.useRelativePaths both pointers are relative, each to the
 # directory holding it: the admin dir's gitdir and the worktree's .git file.
 # A live worktree is neither stale nor orphan, wherever sweep runs from, and
@@ -543,35 +1182,67 @@ t_sweep_relative_paths() {
   git -C "$live" status >/dev/null 2>&1 || fail "--apply cut a live worktree off from its repository"
 }
 
-# --help on every subcommand prints usage and acts on nothing. `create --help`
-# used to take `--help` as the branch name; any other leading dash is refused,
-# never read as a branch or a path.
+# --help on every subcommand prints usage and acts on nothing, and a mistyped
+# option is refused as usage. `create --help` used to take `--help` as the branch
+# name; a leading dash is never read as a branch or a path.
 t_help_never_acts() {
   make_project
   local sub
-  for sub in create provision actor guard remove sweep; do
+  for sub in status check create provision actor guard remove lock unlock sweep; do
     out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" "$sub" --help 2>"$SCRATCH/stderr") && rc=0 || rc=$?
     err=$(cat "$SCRATCH/stderr")
+    expect_rc 0
+    [[ $out == *"Usage: worktree $sub"* ]] || fail "$sub --help did not print its usage: $out"
+    out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" "$sub" --bogus 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+    err=$(cat "$SCRATCH/stderr")
     expect_rc 2
-    expect_err "usage: worktree create"
+    expect_err "--bogus"
   done
-  [[ ! -e $T/root ]] || fail "create --help placed something under the root"
-  [[ -z $(git -C "$T/project" branch --list -- '-*') ]] || fail "create --help made a branch"
-  out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" create --bogus 2>"$SCRATCH/stderr") && rc=0 || rc=$?
-  err=$(cat "$SCRATCH/stderr")
-  expect_rc 1
-  expect_err "create: unknown option --bogus"
+  [[ ! -e $T/root ]] || fail "--help or a mistyped option placed something under the root"
+  [[ -z $(git -C "$T/project" branch --list -- '-*') ]] || fail "--help or a mistyped option made a branch"
+  [[ $(git -C "$T/project" worktree list --porcelain | grep -c '^worktree ') -eq 1 ]] ||
+    fail "--help or a mistyped option registered a worktree"
 }
 
 # --- runner -------------------------------------------------------------------
 
+# Tests run side by side, each with its own scratch directory, and report in order. A test
+# that dies before writing its count is a failure too, not a silent gap.
+run_one() {
+  current=$1
+  SCRATCH=$SCRATCH/run-$1
+  mkdir -p "$SCRATCH"
+  failures=0
+  "t_$1"
+  echo "$failures" >"$results/$1.count"
+}
+
+results=$SCRATCH/results
+mkdir -p "$results"
 all=$(declare -F | awk '{print $3}' | grep '^t_' | sed 's/^t_//')
 selected=${*:-$all}
+limit=${PARITY_JOBS:-8}
+running=0
 for name in $selected; do
-  current=$name
-  before=$failures
-  "t_$name"
-  if [[ $failures -eq $before ]]; then echo "ok   $name"; else echo "FAIL $name"; fi
+  if [[ $running -ge $limit ]]; then
+    wait -n
+    running=$((running - 1))
+  fi
+  (run_one "$name") >"$results/$name.out" 2>"$results/$name.err" &
+  running=$((running + 1))
+done
+wait
+
+for name in $selected; do
+  cat "$results/$name.out"
+  cat "$results/$name.err" >&2
+  count=$(cat "$results/$name.count" 2>/dev/null) || count=""
+  if [[ -z $count ]]; then
+    echo "  FAIL [$name]: the test died before it finished" >&2
+    count=1
+  fi
+  failures=$((failures + count))
+  if [[ $count -eq 0 ]]; then echo "ok   $name"; else echo "FAIL $name"; fi
 done
 echo "$failures failure(s)"
 [[ $failures -eq 0 ]]
