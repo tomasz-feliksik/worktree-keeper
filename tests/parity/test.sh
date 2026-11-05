@@ -39,6 +39,9 @@ run() {
 expect_rc() {
   [[ $rc -eq $1 ]] || fail "expected exit $1, got $rc — stdout: $out — stderr: $err"
 }
+expect_out_mention() {
+  [[ $out == *"$1"* ]] || fail "stdout does not mention '$1': $out"
+}
 expect_err() {
   [[ $err == *"$1"* ]] || fail "stderr does not mention '$1': $err"
 }
@@ -212,6 +215,64 @@ t_remove_branch_disposition() {
   expect_err "not merged"
   git -C "$T/project" show-ref --verify --quiet refs/heads/unmerged ||
     fail "unmerged branch was deleted without --force"
+}
+
+# The remote branch goes last and only on request: kept when the local deletion
+# refuses, kept without --delete-remote, deleted with it, from the branch's own
+# remote rather than always from origin.
+t_remote_branch_deleted_last() {
+  make_project
+  local has_remote_branch
+  has_remote_branch() { git -C "$T/project.git" show-ref --verify --quiet "refs/heads/$1"; }
+
+  make_worktree unmerged
+  echo change >>"$WT/README"
+  git -C "$WT" commit -q -am "unmerged"
+  git -C "$WT" push -q -u origin unmerged 2>/dev/null
+  # Merged to nothing: `branch -d` checks HEAD and the upstream, so take the upstream away.
+  git -C "$WT" branch --unset-upstream
+  run remove --delete-remote "$WT"
+  expect_rc 1
+  has_remote_branch unmerged || fail "the remote branch went although the local deletion refused"
+
+  make_worktree plain
+  git -C "$WT" push -q -u origin plain 2>/dev/null
+  run remove "$WT"
+  expect_rc 0
+  has_remote_branch plain || fail "the remote branch was deleted without --delete-remote"
+
+  make_worktree asked
+  git -C "$WT" push -q -u origin asked 2>/dev/null
+  run remove --delete-remote "$WT"
+  expect_rc 0
+  has_remote_branch asked && fail "--delete-remote did not delete the remote branch"
+  git -C "$T/project" show-ref --verify --quiet refs/heads/asked && fail "the local branch survived"
+
+  make_worktree absent
+  run remove --delete-remote "$WT"
+  expect_rc 0
+  expect_out_mention "has no branch absent"
+
+  git -C "$T/project" remote add other "$T/project.git"
+  make_worktree elsewhere
+  git -C "$WT" push -q -u other elsewhere 2>/dev/null
+  git -C "$T/project" remote rename origin old-origin
+  run remove --delete-remote "$WT"
+  expect_rc 0
+  has_remote_branch elsewhere && fail "the branch's own remote was not the one asked"
+  git -C "$T/project" remote rename old-origin origin
+}
+
+# A remote that cannot answer is not a remote with no such branch.
+t_unreachable_remote_is_could_not_tell() {
+  make_project
+  make_worktree away
+  git -C "$WT" push -q -u origin away 2>/dev/null
+  git -C "$T/project" remote set-url origin "$T/nowhere.git"
+  run remove --delete-remote "$WT"
+  expect_rc 3
+  expect_err "cannot inspect origin"
+  git -C "$T/project.git" show-ref --verify --quiet refs/heads/away || fail "the branch left the remote"
 }
 
 # A top-level submodule in a SUBDIRECTORY is still top-level. The guard used to

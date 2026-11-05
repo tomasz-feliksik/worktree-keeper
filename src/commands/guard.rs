@@ -34,6 +34,17 @@ pub enum OwnChanges {
     MayBeLost,
 }
 
+impl OwnChanges {
+    #[must_use]
+    pub fn from_force(force: bool) -> Self {
+        if force {
+            Self::MayBeLost
+        } else {
+            Self::MustBeClean
+        }
+    }
+}
+
 /// Proof that every file and clone was found disposable. Only [`assess`] can make
 /// one, and [`clear`] needs one, so nothing can be emptied before it was checked.
 #[derive(Debug)]

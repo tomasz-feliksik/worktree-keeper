@@ -21,6 +21,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use commands::guard::OwnChanges;
+use commands::remove::BranchFate;
 use outcome::{CannotTell, Outcome, Stop, exit_status};
 use say::Sink;
 
@@ -92,7 +93,21 @@ fn run(command: Command) -> Outcome {
             };
             return commands::guard::run(path, own_changes);
         }
-        Command::Remove { .. } => "remove",
+        Command::Remove {
+            force,
+            keep_branch,
+            delete_remote,
+            path,
+        } => {
+            let fate = if keep_branch {
+                BranchFate::Keep
+            } else if delete_remote {
+                BranchFate::DeleteLocalAndRemote
+            } else {
+                BranchFate::DeleteLocal
+            };
+            return commands::remove::run(&path, OwnChanges::from_force(force), fate);
+        }
         Command::Sweep { .. } => "sweep",
     };
     Err(Stop::CannotTell(CannotTell::new(format!(
