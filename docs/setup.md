@@ -11,7 +11,7 @@ can be set up from it.
 Needs `gh`, authenticated, and `bd` 1.0 or newer.
 
 ```bash
-gh repo create tomasz-feliksik/worktree-keeper --private \
+gh repo create tomasz-feliksik/worktree-keeper --public \
   --description "Keeps agent git worktrees safe to create, inspect and remove"
 git clone git@github.com:tomasz-feliksik/worktree-keeper.git ~/code/projects/worktree-keeper
 cd ~/code/projects/worktree-keeper
@@ -73,7 +73,7 @@ for the flake to see it**: an untracked file is silently absent, so run `git add
 
 ### Choices worth knowing
 
-- **No `nix-lib`**, so that the flake still builds for others if this repository goes public.
+- **No `nix-lib`**, so that the flake builds for anyone: this repository is public.
 - **fenix `stable`, not `fromToolchainFile`.** The latter fetches its manifest during evaluation, which is
   import-from-derivation. `ai-harness` evaluates with that disabled, so it could not have built this package. `stable`
   is pinned by `flake.lock`, so moving the toolchain means `nix flake update fenix`.
@@ -97,6 +97,21 @@ consumer writes:
 There is nothing to configure. Other modules reach the command through `worktreeKeeper.package`, by store path, since a
 hook run by a long-lived server cannot rely on `PATH`. `checks.home-module` builds a test home and runs the command from
 it.
+
+## Releasing
+
+Consumers build from source, so a release is a version in `Cargo.toml` and a tag on a commit CI has passed. There are no
+binaries to upload.
+
+1. On a branch, set `version` in `Cargo.toml`, and let `cargo build` update `Cargo.lock`. Merge it.
+1. Run `nix develop --command just mutants` on that commit, and explain or kill every survivor.
+1. Tag it and push the tag: `git tag -a v0.1.0 -m "v0.1.0"`, then `git push origin v0.1.0`.
+1. CI runs every job again on the tag, and `release_check` fails if the tag differs from what the binary reports. If it
+   fails, leave that tag alone and release the next version.
+1. In a consumer, pin the tag: `github:tomasz-feliksik/worktree-keeper/v0.1.0`.
+
+Before 1.0, a change that breaks a caller raises the minor version, and anything else raises the patch version. Breaking
+means a guarantee, a command-line option, an exit code, or the JSON schema: see [the schema's rules](json-schema.md).
 
 ## Clone it on another machine
 

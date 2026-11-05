@@ -5,7 +5,7 @@ that wraps the worktree lifecycle and refuses to delete anything it cannot prove
 
 |            |                                                                        |
 | ---------- | ---------------------------------------------------------------------- |
-| Repository | `tomasz-feliksik/worktree-keeper` on GitHub, private for now           |
+| Repository | `tomasz-feliksik/worktree-keeper` on GitHub, public                    |
 | Crate      | `worktree-keeper`                                                      |
 | Binary     | `worktree`                                                             |
 | Status     | Ported and tested. Production still runs the Bash tool in `ai-harness` |
@@ -139,22 +139,22 @@ The port first matched Bash, then fixed each of these as its own commit with a r
 
 ## Technical decisions
 
-| Decision             | Choice                                                                              | Why                                                                                                                                                                   |
-| -------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Language             | Rust                                                                                | No dynamic typing. A discarded `Result` can be a lint failure, and an exhaustive `match` forces every worktree state to be handled                                    |
-| Runtime crates       | `clap`, `serde`, `serde_json`                                                       | Minimum dependencies; `--json` justifies the last two                                                                                                                 |
-| Git access           | Run the `git` binary, not `git2` or `gix`                                           | Same behaviour and configuration as the user's shell, and no native library                                                                                           |
-| Unsafe code          | `#![forbid(unsafe_code)]`                                                           | Nothing here needs it                                                                                                                                                 |
-| Path handling        | A resolved-path type that can only be built through one function                    | Plain types would not have caught the relative-pointer bug; this design would                                                                                         |
-| Toolchain            | fenix `stable`, pinned by `flake.lock`, plus `rust-toolchain.toml` for rustup users | Same tools as other Rust repositories here. `fromToolchainFile` needs import-from-derivation, which `ai-harness` disables                                             |
-| Nix build            | crane                                                                               | Same pattern as other Rust repositories here                                                                                                                          |
-| `nix-lib`            | **Not used**                                                                        | It is private, so a flake using it could not build for anyone else once this repository is public. This is a recorded exception to the owner's project setup standard |
-| Platforms            | `x86_64-linux`, `aarch64-linux`, `aarch64-darwin`                                   | Nixpkgs 26.11 dropped `x86_64-darwin`; evaluating it fails                                                                                                            |
-| Home Manager options | `worktreeKeeper.*`                                                                  | Not `programs.*`, which Home Manager could claim later                                                                                                                |
-| Name                 | `worktree-keeper`                                                                   | `awt` and `agent-worktree` are both taken by tools in this space                                                                                                      |
-| Binary name          | `worktree`                                                                          | Existing hooks and rules keep working                                                                                                                                 |
-| Licence              | Not chosen                                                                          | Decided when the repository goes public                                                                                                                               |
-| Tracking             | Full beads database in this repository                                              | Same as other repositories, synced to `refs/dolt/data`                                                                                                                |
+| Decision             | Choice                                                                              | Why                                                                                                                                    |
+| -------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Language             | Rust                                                                                | No dynamic typing. A discarded `Result` can be a lint failure, and an exhaustive `match` forces every worktree state to be handled     |
+| Runtime crates       | `clap`, `serde`, `serde_json`                                                       | Minimum dependencies; `--json` justifies the last two                                                                                  |
+| Git access           | Run the `git` binary, not `git2` or `gix`                                           | Same behaviour and configuration as the user's shell, and no native library                                                            |
+| Unsafe code          | `#![forbid(unsafe_code)]`                                                           | Nothing here needs it                                                                                                                  |
+| Path handling        | A resolved-path type that can only be built through one function                    | Plain types would not have caught the relative-pointer bug; this design would                                                          |
+| Toolchain            | fenix `stable`, pinned by `flake.lock`, plus `rust-toolchain.toml` for rustup users | Same tools as other Rust repositories here. `fromToolchainFile` needs import-from-derivation, which `ai-harness` disables              |
+| Nix build            | crane                                                                               | Same pattern as other Rust repositories here                                                                                           |
+| `nix-lib`            | **Not used**                                                                        | It is private, so a flake using it could not build for anyone else. This is a recorded exception to the owner's project setup standard |
+| Platforms            | `x86_64-linux`, `aarch64-linux`, `aarch64-darwin`                                   | Nixpkgs 26.11 dropped `x86_64-darwin`; evaluating it fails                                                                             |
+| Home Manager options | `worktreeKeeper.*`                                                                  | Not `programs.*`, which Home Manager could claim later                                                                                 |
+| Name                 | `worktree-keeper`                                                                   | `awt` and `agent-worktree` are both taken by tools in this space                                                                       |
+| Binary name          | `worktree`                                                                          | Existing hooks and rules keep working                                                                                                  |
+| Licence              | Not chosen, so all rights are reserved until then                                   | The repository is public, and the licence is an open decision                                                                          |
+| Tracking             | Full beads database in this repository                                              | Same as other repositories, synced to `refs/dolt/data`                                                                                 |
 
 ### Testing
 
@@ -240,7 +240,7 @@ below are unconfirmed by a real test.
 
 |                                       | worktree-keeper                          | Worktrunk                              | Treehouse                               | gtr                                 |
 | ------------------------------------- | ---------------------------------------- | -------------------------------------- | --------------------------------------- | ----------------------------------- |
-| Language, stars                       | Rust, private                            | Rust, 10.9k                            | Go, 1.9k                                | Bash, 1.8k                          |
+| Language, stars                       | Rust, public                             | Rust, 10.9k                            | Go, 1.9k                                | Bash, 1.8k                          |
 | Model                                 | Lifecycle commands called by other tools | Branch-named worktrees plus merge flow | Reusable pool, detached HEAD by default | Per-branch worktrees plus launchers |
 | Sets up submodules on create          | Yes                                      | No built-in step found                 | No built-in step found                  | Not mentioned                       |
 | Refuses on dirty files                | Yes, including submodules                | Yes, including submodules since 0.80   | Yes                                     | Yes, unless forced                  |
@@ -275,5 +275,4 @@ Each one is a `decision` bead, so `bd list --type=decision` shows the current st
 and seed files were decided on 2026-11-05 as reversible defaults, and await the owner's review while nothing depends on
 them yet:
 
-1. How does `ai-harness` fetch this repository while it is private? This blocks cutover.
-1. When does it go public, and under which licence?
+1. Which licence should this repository have?

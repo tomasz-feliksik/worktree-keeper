@@ -308,7 +308,7 @@ A full run takes about four minutes. Every survivor is killed or explained here.
 
 ## Cutover
 
-This work happens in `ai-harness`, and needs the decision on how it fetches a private input. Its evaluation disables
+This work happens in `ai-harness`, which fetches this public repository with no credential. Its evaluation disables
 import-from-derivation and aborts on warnings. **This flake must stay evaluable under those settings**, which is why it
 uses fenix's `stable` rather than `fromToolchainFile`. Test Nix changes from a shell with this set:
 
@@ -321,13 +321,12 @@ CI's `test` job sets the same two.
 
 | In `ai-harness`                                            | Change                                                                                                                                            |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `flake.nix`                                                | Add this flake as an input, with `follows` for shared inputs                                                                                      |
+| `flake.nix`                                                | Add this flake as an input, pinned to a release tag, with `follows` for shared inputs                                                             |
 | `modules/packages/worktree.nix`                            | Re-export `packages.worktree`, as `usage-ledger.nix` does                                                                                         |
 | `modules/home/worktree.nix`                                | Thin adapter: import `homeModules.default`, expose `worktreeKeeper.package` as `aiHarness.worktree.package`, and delete `aiHarness.worktree.root` |
 | `wrapBeads`, `t_bd_wrapper`, `t_bd_records_worktree_actor` | Stay there, along with the two wrapper mutants                                                                                                    |
 | `checks.worktree`, `checks.worktree-mutations`             | Delete with `modules/packages/_worktree/`, and update `checks.output-paths`                                                                       |
 | workmux and herdr unit checks                              | Keep. These are the integration proof                                                                                                             |
-| Its `just standalone-check`                                | Add this input if it is still private                                                                                                             |
-| workmux and herdr hooks                                    | Decide `--ignore-in-use` for callers that close their own panes: see [in-use detection](#in-use-detection)                                        |
+| workmux and herdr hooks                                    | Callers that close their own panes pass `--ignore-in-use`, and no others: see [in-use detection](#in-use-detection)                               |
 
 Delete `reference/bash/` here only after a real host has been deployed. Before then, it is the rollback reference.

@@ -54,4 +54,15 @@ parity-bash *tests:
 mutants *args:
     cargo mutants --jobs 8 --timeout 60 --exclude-re 'scan_lsof|own_chain_by_ps' {{args}} -- -- --include-ignored
 
+# A release tag has to name the version the binary reports.
+check-tag tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tag={{quote(tag)}}
+    reported=$(cargo run --quiet -- --version)
+    [[ "$tag" == "v${reported#worktree }" ]] || {
+      echo "tag $tag does not match the binary, which reports: $reported" >&2
+      exit 1
+    }
+
 check: lint test parity
