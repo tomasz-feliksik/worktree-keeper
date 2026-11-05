@@ -112,6 +112,40 @@ t_unpushed_populated_submodule() {
   [[ -e $WT/sub/.git ]] || fail "guard deinitialised a submodule it refused to clear"
 }
 
+# --force covers only the worktree's own uncommitted changes: an unpushed
+# submodule commit is refused under it, on remove and on guard alike.
+t_unpushed_refused_under_force() {
+  make_project
+  make_worktree forced
+  git -C "$WT/sub" checkout -q -b work
+  echo change >>"$WT/sub/README"
+  git -C "$WT/sub" commit -q -am "unpushed in sub"
+  run guard --force "$WT"
+  expect_rc 1
+  expect_err "holds commits no remote has"
+  run remove --force "$WT"
+  expect_rc 1
+  expect_err "holds commits no remote has"
+  [[ -e $WT/sub/README ]] || fail "--force emptied a submodule holding an unpushed commit"
+}
+
+# Removing one worktree must not cost ANOTHER worktree's clones. `git worktree
+# prune` works on the whole repository, so a different registration whose directory
+# is gone would lose an unpushed submodule clone that sweep refuses to touch.
+t_remove_keeps_other_stale_registrations() {
+  make_project
+  make_worktree stale-other
+  git -C "$WT/sub" checkout -q -b work
+  echo change >>"$WT/sub/README"
+  git -C "$WT/sub" commit -q -am "unpushed, in the only copy"
+  local stale_gitdir=$WTGIT
+  rm -rf "$WT"
+  make_worktree bystander
+  run remove "$WT"
+  expect_rc 0
+  [[ -d $stale_gitdir/modules/sub ]] || fail "removing another worktree pruned the unpushed clone"
+}
+
 # An unpushed commit on a DETACHED head — the normal state of a submodule, and
 # on no branch at all — is refused.
 t_unpushed_detached_submodule() {
@@ -571,6 +605,19 @@ t_sweep_stale_registration() {
   rm -rf "$WT"
   run sweep --apply --repo "$T/project" "$T/empty-root"
   [[ ! -d $WTGIT ]] || fail "a stale registration with nothing unpushed was not pruned"
+}
+
+# A locked registration is left alone even when its directory is gone: it may be
+# on removable media, and `git worktree prune` leaves it too.
+t_sweep_leaves_locked_registrations() {
+  make_project
+  make_worktree locked-reg
+  git -C "$T/project" worktree lock --reason "on a removable disk" "$WT"
+  rm -rf "$WT"
+  run sweep --apply --repo "$T/project" "$T/empty-root"
+  expect_rc 0
+  [[ -d $WTGIT ]] || fail "--apply pruned a locked registration"
+  [[ $out != *"pruned"* ]] || fail "reported pruning a locked registration: $out"
 }
 
 # With worktree.useRelativePaths both pointers are relative, each to the

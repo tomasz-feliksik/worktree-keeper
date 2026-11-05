@@ -52,7 +52,9 @@ pub fn run(path: &Path, own_changes: OwnChanges, fate: BranchFate) -> Outcome {
     }
     args.push(wt.clone());
     Git::at(main, args).probe(wt)?;
-    Git::at(main, ["worktree", "prune"]).probe(main)?;
+    // No `git worktree prune`: `worktree remove` has already deleted this worktree's
+    // registration, and prune works on the whole repository, where it would delete the
+    // unpushed clones of any other stale registration. Sweep judges those one by one.
     say(Sink::Stdout, format_args!("removed {}", wt.display()));
 
     if branch.is_empty() {
