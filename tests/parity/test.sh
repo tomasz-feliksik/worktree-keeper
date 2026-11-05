@@ -19,6 +19,9 @@ git config --global user.email test@example.invalid
 git config --global init.defaultBranch main
 git config --global protocol.file.allow always
 git config --global advice.detachedHead false
+# Background maintenance after a commit adds and removes files under objects/, which the
+# tests that prove a command writes nothing would then blame on that command.
+git config --global maintenance.auto false
 # The machine this ships to sets it globally; the tests must hold under it.
 git config --global submodule.recurse true
 
