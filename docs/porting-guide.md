@@ -35,7 +35,7 @@ either program there: make the real one fail instead, as `t_provision_never_fail
 
 Mutation testing stays out of the sandbox: it needs hundreds of incremental builds, and its survivors are read rather
 than gated on. It runs broken builds of a tool that deletes things as your own user, so `tests/parity/test.sh` keeps
-every path inside its scratch directory and clears `WORKTREE_ROOT`.
+every path inside its scratch directory.
 
 `just parity-bash` runs the same suite against the frozen Bash tool, to see what the original does. It fails by design:
 on `t_help_never_acts`, on every defect fixed below, and on every test of a command Bash does not have.
@@ -44,16 +44,18 @@ on `t_help_never_acts`, on every defect fixed below, and on every test of a comm
 
 Keep this list current. Anything not listed here must behave exactly as Bash does.
 
-| Behaviour                   | Bash                                                 | Rust                                                        | Why                                     |
-| --------------------------- | ---------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------- |
-| `--help`                    | Exit 2, usage on stderr                              | Exit 0, help on stdout                                      | `clap`, and the normal convention       |
-| Unknown option, any command | Exit 2 or 1, by command, with a hand-written message | Exit 2, `clap`'s message                                    | `clap`; exit 2 means usage anyway       |
-| A branch starting with `-`  | Refused by hand                                      | Rejected by `clap` as an option                             | Same result                             |
-| No placement root           | The message names `aiHarness.worktree.root`          | The message names `WORKTREE_ROOT` and `worktreeKeeper.root` | The tool should not know its consumers  |
-| Paths with spaces           | Split by `awk`, so misread                           | Read with `-z` and split at the tab                         | The limit was never intended            |
-| A probe's stderr            | Mixed into some parsed output                        | Never part of what is parsed                                | Parsing a warning is a wrong answer     |
-| A failed `git worktree add` | Git's own status, such as 128                        | Exit 1                                                      | The exit contract has no 128            |
-| Unreadable directory entry  | A short list                                         | Exit 3                                                      | A short list is what this tool prevents |
+| Behaviour                   | Bash                                                 | Rust                                                          | Why                                          |
+| --------------------------- | ---------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------- |
+| `--help`                    | Exit 2, usage on stderr                              | Exit 0, help on stdout                                        | `clap`, and the normal convention            |
+| Unknown option, any command | Exit 2 or 1, by command, with a hand-written message | Exit 2, `clap`'s message                                      | `clap`; exit 2 means usage anyway            |
+| A branch starting with `-`  | Refused by hand                                      | Rejected by `clap` as an option                               | Same result                                  |
+| Placement                   | `<root>/<repo>/<slug>`, from a configured root       | `<parent>/<repo>.worktrees/<slug>`, with nothing to configure | See below                                    |
+| `status`, `sweep` default   | The configured root, across repositories             | The current repository; refused outside one                   | There is no root any more                    |
+| Where `create` can run      | Any repository                                       | Refused unless the git directory is named `.git`              | Elsewhere the path is wrong or inside `.git` |
+| Paths with spaces           | Split by `awk`, so misread                           | Read with `-z` and split at the tab                           | The limit was never intended                 |
+| A probe's stderr            | Mixed into some parsed output                        | Never part of what is parsed                                  | Parsing a warning is a wrong answer          |
+| A failed `git worktree add` | Git's own status, such as 128                        | Exit 1                                                        | The exit contract has no 128                 |
+| Unreadable directory entry  | A short list                                         | Exit 3                                                        | A short list is what this tool prevents      |
 
 The `--help` guarantee stays: **`--help` and a mistyped option never act**, so nothing may be created, and no branch may
 be made.
@@ -90,8 +92,9 @@ would hide a caller's typo.
 one piece of knowledge about a specific caller. Keep it for parity, because `t_guard_reads_workmux_env` tests it.
 workmux also runs the hook inside the worktree, so it can probably be dropped at cutover. Confirm that first.
 
-**`WORKTREE_ROOT`.** The installed command gets this from its wrapper. An explicit value in the environment wins, and
-the tests rely on that.
+**Placement.** `src/placement.rs` holds the one rule, and every command asks it. `WORKTREE_ROOT` and
+`worktreeKeeper.root` are gone. Worktrees that already live elsewhere keep working: `guard` and `remove` take a path,
+and `status` lists what git has registered, wherever it is.
 
 ## In-use detection
 
@@ -172,7 +175,7 @@ which is the only one left once main has retired the submodule. If no clone can 
 
 - Its allow database is keyed by path and content, so a new worktree is never trusted just by existing.
 - `direnv status` prints `Found RC allowed 0` on 2.37 and `true` on older versions. Accept both.
-- Never use a `whitelist.prefix` on the placement root. It trusts every future `.envrc` under that path, unseen.
+- Never use a `whitelist.prefix` on a worktrees directory. It trusts every future `.envrc` under that path, unseen.
 
 ### Merge detection
 
@@ -314,15 +317,15 @@ nix flake check
 
 CI's `test` job sets the same two.
 
-| In `ai-harness`                                            | Change                                                                                                                                                        |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `flake.nix`                                                | Add this flake as an input, with `follows` for shared inputs                                                                                                  |
-| `modules/packages/worktree.nix`                            | Re-export `packages.worktree`, as `usage-ledger.nix` does                                                                                                     |
-| `modules/home/worktree.nix`                                | Thin adapter: import `homeModules.default`, map `aiHarness.worktree.root` to `worktreeKeeper.root`, and expose `finalPackage` as `aiHarness.worktree.package` |
-| `wrapBeads`, `t_bd_wrapper`, `t_bd_records_worktree_actor` | Stay there, along with the two wrapper mutants                                                                                                                |
-| `checks.worktree`, `checks.worktree-mutations`             | Delete with `modules/packages/_worktree/`, and update `checks.output-paths`                                                                                   |
-| workmux and herdr unit checks                              | Keep. These are the integration proof                                                                                                                         |
-| Its `just standalone-check`                                | Add this input if it is still private                                                                                                                         |
-| workmux and herdr hooks                                    | Decide `--ignore-in-use` for callers that close their own panes: see [in-use detection](#in-use-detection)                                                    |
+| In `ai-harness`                                            | Change                                                                                                                                            |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flake.nix`                                                | Add this flake as an input, with `follows` for shared inputs                                                                                      |
+| `modules/packages/worktree.nix`                            | Re-export `packages.worktree`, as `usage-ledger.nix` does                                                                                         |
+| `modules/home/worktree.nix`                                | Thin adapter: import `homeModules.default`, expose `worktreeKeeper.package` as `aiHarness.worktree.package`, and delete `aiHarness.worktree.root` |
+| `wrapBeads`, `t_bd_wrapper`, `t_bd_records_worktree_actor` | Stay there, along with the two wrapper mutants                                                                                                    |
+| `checks.worktree`, `checks.worktree-mutations`             | Delete with `modules/packages/_worktree/`, and update `checks.output-paths`                                                                       |
+| workmux and herdr unit checks                              | Keep. These are the integration proof                                                                                                             |
+| Its `just standalone-check`                                | Add this input if it is still private                                                                                                             |
+| workmux and herdr hooks                                    | Decide `--ignore-in-use` for callers that close their own panes: see [in-use detection](#in-use-detection)                                        |
 
 Delete `reference/bash/` here only after a real host has been deployed. Before then, it is the rollback reference.

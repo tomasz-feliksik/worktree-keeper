@@ -91,14 +91,12 @@ consumer writes:
 ```nix
 {
   imports = [inputs.worktree-keeper.homeModules.default];
-  worktreeKeeper.root = "${config.home.homeDirectory}/worktrees";
 }
 ```
 
-`root` has no default, because a default would silently put worktrees somewhere nobody chose. It is baked in with
-`wrapProgram --set-default`, because a session variable does not reach hooks and agents started outside a login shell.
-Other modules reach the configured command through the read-only `worktreeKeeper.finalPackage`. `checks.home-module`
-builds a test home and confirms the root reaches the wrapper.
+There is nothing to configure. Other modules reach the command through `worktreeKeeper.package`, by store path, since a
+hook run by a long-lived server cannot rely on `PATH`. `checks.home-module` builds a test home and runs the command from
+it.
 
 ## Clone it on another machine
 
