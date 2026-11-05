@@ -1,0 +1,21 @@
+[package]
+name = "worktree-keeper"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Keeps agent git worktrees safe to create, inspect and remove"
+publish = false
+
+[[bin]]
+name = "worktree"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
