@@ -312,6 +312,8 @@ export NIX_CONFIG=$'abort-on-warn = true\nallow-import-from-derivation = false'
 nix flake check
 ```
 
+CI's `test` job sets the same two.
+
 | In `ai-harness`                                            | Change                                                                                                                                                        |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `flake.nix`                                                | Add this flake as an input, with `follows` for shared inputs                                                                                                  |
