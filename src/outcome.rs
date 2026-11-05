@@ -30,11 +30,42 @@ impl fmt::Display for CannotTell {
     }
 }
 
-/// Why the answer was no, for an agent to act on without parsing prose.
+/// Why the answer was no, for an agent to act on without parsing prose. Each is a
+/// `kind` in the `--json` schema: see docs/json-schema.md.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefusalKind {
-    Other,
+    NotADirectory,
+    MainWorktree,
+    Locked,
+    InUse,
+    Dirty,
+    DirtySubmodule,
+    UnpushedSubmodule,
+    StrandedDiffers,
+    StrandedUntraceable,
+    StillPopulated,
     UnmergedBranch,
+    Other,
+}
+
+impl RefusalKind {
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::NotADirectory => "not_a_directory",
+            Self::MainWorktree => "main_worktree",
+            Self::Locked => "locked",
+            Self::InUse => "in_use",
+            Self::Dirty => "dirty",
+            Self::DirtySubmodule => "dirty_submodule",
+            Self::UnpushedSubmodule => "unpushed_submodule",
+            Self::StrandedDiffers => "stranded_differs",
+            Self::StrandedUntraceable => "stranded_untraceable",
+            Self::StillPopulated => "still_populated",
+            Self::UnmergedBranch => "unmerged_branch",
+            Self::Other => "other",
+        }
+    }
 }
 
 /// Why a command stopped short of success.
@@ -58,6 +89,16 @@ impl Stop {
         Self::Refused {
             kind,
             message: format!("worktree: {reason}"),
+        }
+    }
+
+    /// This stop's `kind` in the `--json` schema.
+    #[must_use]
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Refused { kind, .. } => kind.name(),
+            Self::Usage(_) => "usage",
+            Self::CannotTell(_) => "could_not_check",
         }
     }
 

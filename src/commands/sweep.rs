@@ -48,11 +48,20 @@ enum Kind {
     Other,
 }
 
+/// What a placement root holds.
 #[derive(Debug, Default)]
-struct Found {
+pub struct Found {
+    pub live: Vec<PathBuf>,
+    pub orphans: Vec<PathBuf>,
     leftovers: Vec<PathBuf>,
-    orphans: Vec<PathBuf>,
     repos: Vec<PathBuf>,
+}
+
+/// Classifies what is under one canonical placement root, changing nothing.
+pub fn survey(root: &Path) -> Result<Found, CannotTell> {
+    let mut found = Found::default();
+    survey_root(root, &mut found)?;
+    Ok(found)
 }
 
 pub fn run(mode: Mode, repos: Vec<PathBuf>, roots: Vec<PathBuf>) -> Outcome {
@@ -182,6 +191,7 @@ fn note(kind: Kind, dir: PathBuf, found: &mut Found) -> Result<(), CannotTell> {
             )
             .probe(&dir)?;
             found.repos.push(parent_of(&trimmed_path(common))?);
+            found.live.push(dir);
         }
         Kind::Orphan => found.orphans.push(dir),
         Kind::Repo | Kind::Other => {}

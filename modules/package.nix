@@ -20,7 +20,7 @@
     src = craneLib.cleanCargoSource ../.;
     # The programs the tool runs. They are on PATH for its own tests, and wrapped
     # into the package because a hook cannot rely on the caller's PATH.
-    runtimePrograms = [pkgs.git pkgs.direnv];
+    runtimePrograms = [pkgs.git pkgs.direnv] ++ pkgs.lib.optional pkgs.stdenv.isDarwin pkgs.lsof;
     commonArgs = {
       inherit src;
       strictDeps = true;

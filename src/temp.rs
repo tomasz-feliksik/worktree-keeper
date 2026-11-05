@@ -19,7 +19,10 @@ pub struct TempFile(PathBuf);
 impl TempFile {
     /// Creates a new empty file. `create_new` refuses to follow a planted symlink.
     pub fn create() -> io::Result<Self> {
-        let dir = env::temp_dir();
+        Self::create_in(&env::temp_dir())
+    }
+
+    fn create_in(dir: &Path) -> io::Result<Self> {
         let pid = process::id();
         for _ in 0..ATTEMPTS {
             let serial = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -48,6 +51,26 @@ impl Drop for TempFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::Scratch;
+
+    #[test]
+    fn a_name_left_by_an_earlier_process_is_skipped() {
+        let scratch = Scratch::new();
+        let next = NEXT.load(Ordering::Relaxed);
+        for serial in next..next + 4 {
+            let stale = format!("worktree-keeper-{}-{serial}", process::id());
+            fs::write(scratch.path().join(stale), "stale").unwrap();
+        }
+        let file = TempFile::create_in(scratch.path()).unwrap();
+        assert_eq!(fs::read(file.path()).unwrap(), b"");
+    }
+
+    #[test]
+    fn any_other_failure_is_reported_as_itself() {
+        let scratch = Scratch::new();
+        let error = TempFile::create_in(&scratch.path().join("missing")).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+    }
 
     #[test]
     fn a_temp_file_exists_while_held_and_is_gone_after() {

@@ -14,7 +14,18 @@ fn help_exits_zero_and_lists_every_command() {
     let output = worktree(&["--help"]);
     assert_eq!(output.status.code(), Some(0));
     let help = String::from_utf8_lossy(&output.stdout);
-    for command in ["create", "provision", "actor", "guard", "remove", "sweep"] {
+    for command in [
+        "status",
+        "check",
+        "create",
+        "provision",
+        "actor",
+        "guard",
+        "remove",
+        "lock",
+        "unlock",
+        "sweep",
+    ] {
         assert!(
             help.contains(command),
             "--help should list {command}: {help}"

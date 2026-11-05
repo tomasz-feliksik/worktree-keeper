@@ -20,7 +20,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::git::{Git, flag, shown, trimmed};
-use crate::outcome::{CannotTell, Outcome, Stop};
+use crate::in_use;
+use crate::outcome::{CannotTell, Outcome, RefusalKind, Stop};
 use crate::paths::{self, cannot_read};
 use crate::say::{Sink, say};
 use crate::submodules::{self, nested_in};
@@ -34,13 +35,35 @@ pub enum OwnChanges {
     MayBeLost,
 }
 
-impl OwnChanges {
+/// Whether a process running inside the worktree stops the removal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunningProcesses {
+    Refuse,
+    Ignore,
+}
+
+/// What the caller has accepted. `--force` does not cover running processes: it accepts
+/// losing changes already made, not pulling a directory from under a working process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rules {
+    pub own_changes: OwnChanges,
+    pub running: RunningProcesses,
+}
+
+impl Rules {
     #[must_use]
-    pub fn from_force(force: bool) -> Self {
-        if force {
-            Self::MayBeLost
-        } else {
-            Self::MustBeClean
+    pub fn from_flags(force: bool, ignore_in_use: bool) -> Self {
+        Self {
+            own_changes: if force {
+                OwnChanges::MayBeLost
+            } else {
+                OwnChanges::MustBeClean
+            },
+            running: if ignore_in_use {
+                RunningProcesses::Ignore
+            } else {
+                RunningProcesses::Refuse
+            },
         }
     }
 }
@@ -55,7 +78,7 @@ pub struct Clearance {
 }
 
 /// `guard`: assess, then clear. Never removes the worktree.
-pub fn run(path: Option<PathBuf>, own_changes: OwnChanges) -> Outcome {
+pub fn run(path: Option<PathBuf>, rules: Rules) -> Outcome {
     let path = path
         .or_else(|| {
             env::var_os("WM_WORKTREE_PATH")
@@ -69,7 +92,7 @@ pub fn run(path: Option<PathBuf>, own_changes: OwnChanges) -> Outcome {
             ))
         })?;
     let worktree = LinkedWorktree::resolve(&path)?;
-    let clearance = assess(&worktree, own_changes)?;
+    let clearance = assess(&worktree, rules)?;
     clear(&worktree, clearance)?;
     say(
         Sink::Stdout,
@@ -79,17 +102,49 @@ pub fn run(path: Option<PathBuf>, own_changes: OwnChanges) -> Outcome {
 }
 
 /// Every check, changing nothing on disk.
-pub fn assess(worktree: &LinkedWorktree, own_changes: OwnChanges) -> Outcome<Clearance> {
+pub fn assess(worktree: &LinkedWorktree, rules: Rules) -> Outcome<Clearance> {
     let wt = &worktree.path;
-    if own_changes == OwnChanges::MustBeClean {
+    if let Some(reason) = lock_reason(worktree)? {
+        return Err(Stop::refused_as(
+            RefusalKind::Locked,
+            format!(
+                "{} is locked ({}) — release it with 'worktree unlock {}' once nothing depends on it",
+                wt.display(),
+                if reason.is_empty() {
+                    "no reason given"
+                } else {
+                    &reason
+                },
+                wt.display()
+            ),
+        ));
+    }
+    if rules.running == RunningProcesses::Refuse {
+        let holders = in_use::holders(wt)?;
+        if !holders.is_empty() {
+            let named: Vec<_> = holders.iter().map(ToString::to_string).collect();
+            return Err(Stop::refused_as(
+                RefusalKind::InUse,
+                format!(
+                    "{} is in use by {} — stop them, or run this from outside the worktree if the tool closes its own panes, or pass --ignore-in-use if you own them",
+                    wt.display(),
+                    named.join(", ")
+                ),
+            ));
+        }
+    }
+    if rules.own_changes == OwnChanges::MustBeClean {
         let dirty = status(wt)?;
         if !dirty.is_empty() {
-            return Err(Stop::refused(format!(
-                "{} has uncommitted changes — commit them, or discard them with 'worktree remove --force {}':\n{}",
-                wt.display(),
-                wt.display(),
-                shown(&dirty)
-            )));
+            return Err(Stop::refused_as(
+                RefusalKind::Dirty,
+                format!(
+                    "{} has uncommitted changes — commit them, or discard them with 'worktree remove --force {}':\n{}",
+                    wt.display(),
+                    wt.display(),
+                    shown(&dirty)
+                ),
+            ));
         }
     }
 
@@ -106,12 +161,15 @@ pub fn assess(worktree: &LinkedWorktree, own_changes: OwnChanges) -> Outcome<Cle
     for sub in &live {
         let dirty = status(&wt.join(sub))?;
         if !dirty.is_empty() {
-            return Err(Stop::refused(format!(
-                "submodule {} in {} has uncommitted changes — commit and push them there first:\n{}",
-                sub.display(),
-                wt.display(),
-                shown(&dirty)
-            )));
+            return Err(Stop::refused_as(
+                RefusalKind::DirtySubmodule,
+                format!(
+                    "submodule {} in {} has uncommitted changes — commit and push them there first:\n{}",
+                    sub.display(),
+                    wt.display(),
+                    shown(&dirty)
+                ),
+            ));
         }
     }
 
@@ -125,11 +183,14 @@ pub fn assess(worktree: &LinkedWorktree, own_changes: OwnChanges) -> Outcome<Cle
     for clone in submodules::module_gitdirs(&worktree.gitdir)? {
         let pending = submodules::unpushed(&clone)?;
         if !pending.is_empty() {
-            return Err(Stop::refused(format!(
-                "{} holds commits no remote has — a submodule clone that exists only in this worktree; push them first:\n{}",
-                clone.display(),
-                shown(&pending)
-            )));
+            return Err(Stop::refused_as(
+                RefusalKind::UnpushedSubmodule,
+                format!(
+                    "{} holds commits no remote has — a submodule clone that exists only in this worktree; push them first:\n{}",
+                    clone.display(),
+                    shown(&pending)
+                ),
+            ));
         }
     }
 
@@ -141,6 +202,16 @@ pub fn assess(worktree: &LinkedWorktree, own_changes: OwnChanges) -> Outcome<Cle
         top_level,
         stranded,
     })
+}
+
+/// The reason in a `git worktree lock`, if the worktree is locked. It can be empty.
+pub fn lock_reason(worktree: &LinkedWorktree) -> Result<Option<String>, CannotTell> {
+    let file = worktree.gitdir.join("locked");
+    if !paths::exists(&file)? {
+        return Ok(None);
+    }
+    let reason = fs::read(&file).map_err(|error| cannot_read(&file, &error))?;
+    Ok(Some(shown(&reason)))
 }
 
 /// With every clone proven disposable: empties the submodules and clears `modules/`.
@@ -190,11 +261,14 @@ pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome {
             .iter()
             .map(|sub| sub.display().to_string())
             .collect();
-        return Err(Stop::refused(format!(
-            "still populated after emptying, so {} is NOT cleared (clearing it would strand them):\n{}",
-            modules.display(),
-            list.join("\n")
-        )));
+        return Err(Stop::refused_as(
+            RefusalKind::StillPopulated,
+            format!(
+                "still populated after emptying, so {} is NOT cleared (clearing it would strand them):\n{}",
+                modules.display(),
+                list.join("\n")
+            ),
+        ));
     }
     if paths::is_dir(&modules)? {
         fs::remove_dir_all(&modules).map_err(|error| {
@@ -211,8 +285,19 @@ pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome {
     Ok(())
 }
 
-fn status(dir: &Path) -> Result<Vec<u8>, CannotTell> {
-    Git::at(dir, ["status", "--porcelain", "--ignore-submodules=all"]).probe(dir)
+/// `--no-optional-locks`: a plain `git status` refreshes the index when it can, and a
+/// question must not write. `check` and `status` are built on this.
+pub fn status(dir: &Path) -> Result<Vec<u8>, CannotTell> {
+    Git::at(
+        dir,
+        [
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--ignore-submodules=all",
+        ],
+    )
+    .probe(dir)
 }
 
 fn empty_directory(dir: &Path) -> Outcome {
@@ -243,17 +328,23 @@ fn verify_top_level_stranded(
     head: &str,
 ) -> Outcome {
     if nested_in(sub, subs) {
-        return Err(Stop::refused(format!(
-            "stranded submodule {} sits inside a live one; cannot trace its clone — inspect it by hand",
-            sub.display()
-        )));
+        return Err(Stop::refused_as(
+            RefusalKind::StrandedUntraceable,
+            format!(
+                "stranded submodule {} sits inside a live one; cannot trace its clone — inspect it by hand",
+                sub.display()
+            ),
+        ));
     }
     let name = submodules::name_at(&worktree.common, head, sub)?.ok_or_else(|| {
-        Stop::refused(format!(
-            "stranded submodule {} is not in {}'s .gitmodules",
-            sub.display(),
-            worktree.path.display()
-        ))
+        Stop::refused_as(
+            RefusalKind::StrandedUntraceable,
+            format!(
+                "stranded submodule {} is not in {}'s .gitmodules",
+                sub.display(),
+                worktree.path.display()
+            ),
+        )
     })?;
     let commit = submodules::recorded_commit(&worktree.path, sub)?.ok_or_else(|| {
         CannotTell::new(format!(
@@ -294,12 +385,15 @@ fn verify_stranded(dir: &Path, clone: &Path, commit: &str, label: &Path) -> Outc
     ];
     let diff = Git::new(args).index_file(index.path()).probe(label)?;
     if !diff.is_empty() {
-        return Err(Stop::refused(format!(
-            "stranded submodule {} differs from its recorded commit {} — keep what you need from it first:\n{}",
-            label.display(),
-            short(commit),
-            shown(&diff)
-        )));
+        return Err(Stop::refused_as(
+            RefusalKind::StrandedDiffers,
+            format!(
+                "stranded submodule {} differs from its recorded commit {} — keep what you need from it first:\n{}",
+                label.display(),
+                short(commit),
+                shown(&diff)
+            ),
+        ));
     }
 
     for nested in submodules::gitlinks_at(clone, commit, label)? {
@@ -309,12 +403,15 @@ fn verify_stranded(dir: &Path, clone: &Path, commit: &str, label: &Path) -> Outc
         }
         let nested_label = label.join(&nested.path);
         let name = submodules::name_at(clone, commit, &nested.path)?.ok_or_else(|| {
-            Stop::refused(format!(
-                "stranded submodule {} is not in {}'s .gitmodules at {}",
-                nested_label.display(),
-                label.display(),
-                short(commit)
-            ))
+            Stop::refused_as(
+                RefusalKind::StrandedUntraceable,
+                format!(
+                    "stranded submodule {} is not in {}'s .gitmodules at {}",
+                    nested_label.display(),
+                    label.display(),
+                    short(commit)
+                ),
+            )
         })?;
         let candidate = clone.join("modules").join(&name);
         let nested_clone = submodules::clone_with(&nested.commit, std::slice::from_ref(&candidate))?

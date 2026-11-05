@@ -5,6 +5,7 @@
 
 mod commands;
 mod git;
+mod in_use;
 mod outcome;
 mod paths;
 mod say;
@@ -20,7 +21,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use commands::guard::OwnChanges;
+use commands::check::Format;
+use commands::guard::Rules;
 use commands::remove::BranchFate;
 use commands::sweep::Mode;
 use outcome::{Outcome, exit_status};
@@ -48,10 +50,28 @@ enum Command {
     Provision { path: Option<PathBuf> },
     /// Print the identity of the worktree containing a directory
     Actor { dir: Option<PathBuf> },
+    /// List every worktree and whether it could be removed; changes nothing
+    Status {
+        #[arg(long)]
+        json: bool,
+        path: Option<PathBuf>,
+    },
+    /// Ask whether a worktree may be removed; changes nothing
+    Check {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        ignore_in_use: bool,
+        path: PathBuf,
+    },
     /// Check whether a worktree may be removed, then clear stale metadata; never removes it
     Guard {
         #[arg(long)]
         force: bool,
+        #[arg(long)]
+        ignore_in_use: bool,
         path: Option<PathBuf>,
     },
     /// Guard, then remove the worktree and its merged branch
@@ -59,11 +79,21 @@ enum Command {
         #[arg(long)]
         force: bool,
         #[arg(long)]
+        ignore_in_use: bool,
+        #[arg(long)]
         keep_branch: bool,
         #[arg(long)]
         delete_remote: bool,
         path: PathBuf,
     },
+    /// Mark a worktree as occupied, with git worktree lock
+    Lock {
+        #[arg(long)]
+        reason: Option<String>,
+        path: Option<PathBuf>,
+    },
+    /// Release a worktree marked as occupied
+    Unlock { path: Option<PathBuf> },
     /// Find leftovers; delete them only with --apply
     Sweep {
         #[arg(long)]
@@ -84,9 +114,27 @@ fn run(command: Command) -> Outcome {
             commands::actor::run(dir);
             Ok(())
         }
-        Command::Guard { force, path } => commands::guard::run(path, OwnChanges::from_force(force)),
+        Command::Status { json, path } => commands::status::run(path, format_of(json)),
+        Command::Check {
+            json,
+            force,
+            ignore_in_use,
+            path,
+        } => commands::check::run(
+            &path,
+            Rules::from_flags(force, ignore_in_use),
+            format_of(json),
+        ),
+        Command::Guard {
+            force,
+            ignore_in_use,
+            path,
+        } => commands::guard::run(path, Rules::from_flags(force, ignore_in_use)),
+        Command::Lock { reason, path } => commands::lock::lock(path, reason),
+        Command::Unlock { path } => commands::lock::unlock(path),
         Command::Remove {
             force,
+            ignore_in_use,
             keep_branch,
             delete_remote,
             path,
@@ -98,7 +146,7 @@ fn run(command: Command) -> Outcome {
             } else {
                 BranchFate::DeleteLocal
             };
-            commands::remove::run(&path, OwnChanges::from_force(force), fate)
+            commands::remove::run(&path, Rules::from_flags(force, ignore_in_use), fate)
         }
         Command::Sweep {
             apply,
@@ -109,6 +157,10 @@ fn run(command: Command) -> Outcome {
             commands::sweep::run(mode, repos, roots)
         }
     }
+}
+
+fn format_of(json: bool) -> Format {
+    if json { Format::Json } else { Format::Text }
 }
 
 fn main() -> ExitCode {

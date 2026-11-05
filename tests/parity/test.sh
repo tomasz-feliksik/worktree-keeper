@@ -490,6 +490,168 @@ t_guard_reads_workmux_env() {
   [[ $out == *"$WT may be removed"* ]] || fail "guard did not act on WM_WORKTREE_PATH: $out"
 }
 
+# --- questions ----------------------------------------------------------------
+
+# Everything a question could touch, by path, mtime, size and mode.
+tree_state() {
+  find "$@" -printf '%p %T@ %s %m\n' 2>/dev/null | sort
+}
+
+# check changes nothing on disk, even where guard would clear metadata. The file is
+# touched first, so that a plain `git status` would rewrite the index.
+t_check_changes_nothing() {
+  make_project
+  make_worktree asked
+  touch "$WT/README" "$WT/sub/README"
+  local before after
+  before=$(tree_state "$WT" "$WTGIT")
+  run check "$WT"
+  expect_rc 0
+  expect_out_mention "may be removed"
+  after=$(tree_state "$WT" "$WTGIT")
+  [[ $before == "$after" ]] || fail "check changed the disk:"$'\n'"$(diff <(echo "$before") <(echo "$after") | head -20)"
+  run guard "$WT"
+  expect_rc 0
+  [[ ! -d $WTGIT/modules ]] || fail "setup: guard should have cleared what check left"
+}
+
+# status changes nothing either, and that includes a stranded worktree it has to verify.
+t_status_changes_nothing() {
+  make_project
+  make_worktree looked
+  touch "$WT/README" "$WT/sub/README"
+  local before after
+  before=$(tree_state "$WT" "$WTGIT")
+  run status "$WT"
+  expect_rc 0
+  after=$(tree_state "$WT" "$WTGIT")
+  [[ $before == "$after" ]] || fail "status changed the disk:"$'\n'"$(diff <(echo "$before") <(echo "$after") | head -20)"
+}
+
+# check and guard give the same answer in every state, because they are the same code.
+t_check_agrees_with_guard() {
+  make_project
+  local state check_rc guard_rc
+  for state in clean dirty dirty_sub unpushed main; do
+    make_worktree "agree-$state"
+    case $state in
+    dirty) echo x >"$WT/scratch" ;;
+    dirty_sub) echo x >>"$WT/sub/README" ;;
+    unpushed)
+      git -C "$WT/sub" checkout -q -b work
+      echo x >>"$WT/sub/README"
+      git -C "$WT/sub" commit -q -am unpushed
+      ;;
+    main) WT=$T/project ;;
+    esac
+    run check "$WT"
+    check_rc=$rc
+    run guard "$WT"
+    guard_rc=$rc
+    [[ $check_rc -eq $guard_rc ]] || fail "$state: check exited $check_rc, guard exited $guard_rc"
+    [[ $state == clean || $check_rc -ne 0 ]] || fail "$state: check said removable"
+  done
+  make_worktree agree-garbage
+  git -C "$WT" submodule -q deinit -f --all 2>/dev/null
+  echo garbage >"$WTGIT/modules/sub/HEAD"
+  run check "$WT"
+  expect_rc 3
+  expect_err "cannot inspect"
+}
+
+# A process inside the worktree is named and refuses removal, under --force too. The
+# caller's own process and its ancestors do not count. --ignore-in-use lets through.
+t_in_use_refuses_and_names_the_process() {
+  make_project
+  make_worktree busy
+  (cd "$WT" && exec sleep 300) &
+  local holder=$!
+  local sub
+  for sub in check guard; do
+    run "$sub" "$WT"
+    expect_rc 1
+    expect_err "in use by sleep (pid $holder)"
+    run "$sub" --force "$WT"
+    expect_rc 1
+    expect_err "in use by sleep"
+  done
+  run remove --force "$WT"
+  expect_rc 1
+  expect_err "in use by sleep"
+  [[ -e $WT/sub/README ]] || fail "a refused removal emptied the submodule"
+  run status "$WT"
+  expect_rc 0
+  [[ $out == *"refused"* && $out == *"in_use"* ]] || fail "status did not report the process: $out"
+  run check --ignore-in-use "$WT"
+  expect_rc 0
+  kill "$holder"
+  wait "$holder" 2>/dev/null
+
+  # The caller's own shell, sitting in the worktree, is not a holder.
+  out=$(cd "$WT" && bash -c '"$WORKTREE" check "$PWD"' 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  run remove "$WT"
+  expect_rc 0
+}
+
+# A locked worktree is refused naming the reason, under --force too, until unlocked.
+t_lock_refuses_until_unlocked() {
+  make_project
+  make_worktree held
+  run lock --reason "agent-7 is working here" "$WT"
+  expect_rc 0
+  [[ -f $WTGIT/locked ]] || fail "lock did not use git worktree lock"
+  local sub
+  for sub in check guard; do
+    run "$sub" --force "$WT"
+    expect_rc 1
+    expect_err "agent-7 is working here"
+  done
+  run remove --force "$WT"
+  expect_rc 1
+  expect_err "agent-7 is working here"
+  [[ -e $WT/sub/README ]] || fail "a refused removal emptied the submodule"
+  run lock "$WT"
+  expect_rc 1
+  run unlock "$WT"
+  expect_rc 0
+  [[ ! -f $WTGIT/locked ]] || fail "unlock did not release it"
+  run remove "$WT"
+  expect_rc 0
+  run unlock "$T/project"
+  expect_rc 1
+  expect_err "main worktree"
+}
+
+# Every worktree under the root gets a verdict; an orphan is unknown, never safe, and
+# makes the exit status 3. Nothing is deleted.
+t_status_lists_every_worktree() {
+  make_project
+  local root=$T/root safe busy created
+  safe=$(cd "$T/project" && WORKTREE_ROOT=$root "$WORKTREE" create safe-one 2>/dev/null)
+  busy=$(cd "$T/project" && WORKTREE_ROOT=$root "$WORKTREE" create dirty-one 2>/dev/null)
+  echo x >"$busy/scratch"
+  out=$(WORKTREE_ROOT=$root "$WORKTREE" status 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  [[ $out == *"removable"*"$safe"* ]] || fail "the clean worktree is not removable: $out"
+  [[ $out == *"refused"*"$busy"*"dirty"* ]] || fail "the dirty worktree is not refused: $out"
+
+  mkdir -p "$root/project/orphan"
+  echo "gitdir: $T/nowhere" >"$root/project/orphan/.git"
+  out=$(WORKTREE_ROOT=$root "$WORKTREE" status 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 3
+  [[ $out == *"unknown"*"$root/project/orphan"* ]] || fail "an orphan is not unknown: $out"
+  [[ -f $busy/scratch && -d $root/project/orphan ]] || fail "status deleted something"
+
+  out=$(env -u WORKTREE_ROOT "$WORKTREE" status 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 1
+  expect_err "no placement root"
+}
+
 # --- actor --------------------------------------------------------------------
 
 t_actor() {
@@ -750,7 +912,7 @@ t_sweep_relative_paths() {
 t_help_never_acts() {
   make_project
   local sub
-  for sub in create provision actor guard remove sweep; do
+  for sub in status check create provision actor guard remove lock unlock sweep; do
     out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" "$sub" --help 2>"$SCRATCH/stderr") && rc=0 || rc=$?
     err=$(cat "$SCRATCH/stderr")
     expect_rc 0

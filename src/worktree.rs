@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::git::{Git, trimmed_path};
-use crate::outcome::{CannotTell, Outcome, Stop};
+use crate::outcome::{CannotTell, Outcome, RefusalKind, Stop};
 use crate::paths::{self, cannot_read};
 
 /// A path resolved to a linked worktree. The main checkout cannot be one, so a
@@ -23,10 +23,10 @@ pub struct LinkedWorktree {
 impl LinkedWorktree {
     pub fn resolve(path: &Path) -> Outcome<Self> {
         if !paths::is_dir(path)? {
-            return Err(Stop::refused(format!(
-                "{} is not a directory",
-                path.display()
-            )));
+            return Err(Stop::refused_as(
+                RefusalKind::NotADirectory,
+                format!("{} is not a directory", path.display()),
+            ));
         }
         let start = path
             .canonicalize()
@@ -38,10 +38,10 @@ impl LinkedWorktree {
         let gitdir = question(&["rev-parse", "--absolute-git-dir"])?;
         let common = question(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
         if gitdir == common {
-            return Err(Stop::refused(format!(
-                "{} is the main worktree, not a linked one",
-                top.display()
-            )));
+            return Err(Stop::refused_as(
+                RefusalKind::MainWorktree,
+                format!("{} is the main worktree, not a linked one", top.display()),
+            ));
         }
         let main_checkout = parent_of(&common)?;
         Ok(Self {
