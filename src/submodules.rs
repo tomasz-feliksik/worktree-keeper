@@ -391,6 +391,46 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_with_objects_but_no_head_file_is_not_a_clone() {
+        let scratch = Scratch::new();
+        let almost = scratch.path().join("modules/almost");
+        fs::create_dir_all(almost.join("objects")).unwrap();
+        fs::write(almost.join("config"), "x").unwrap();
+        assert_eq!(
+            module_gitdirs(scratch.path()).unwrap(),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn a_clone_counts_only_if_it_holds_the_commit() {
+        let scratch = Scratch::new();
+        let lacking = scratch.path().join("lacking");
+        let holding = scratch.path().join("holding");
+        let missing = scratch.path().join("missing");
+        for repo in [&lacking, &holding] {
+            fs::create_dir(repo).unwrap();
+            git(repo, &["init", "-q"]);
+        }
+        git(
+            &holding,
+            &["commit", "-q", "--allow-empty", "-m", "the commit"],
+        );
+        let commit = shown_head(&holding);
+        let candidates = [missing, lacking.join(".git"), holding.join(".git")];
+        assert_eq!(
+            clone_with(&commit, &candidates).unwrap(),
+            Some(holding.join(".git"))
+        );
+        assert_eq!(clone_with(&commit, &candidates[..2]).unwrap(), None);
+    }
+
+    fn shown_head(repo: &Path) -> String {
+        let head = Git::at(repo, ["rev-parse", "HEAD"]).probe(repo).unwrap();
+        trimmed(head).to_string_lossy().into_owned()
+    }
+
+    #[test]
     fn no_modules_directory_means_no_clones() {
         let scratch = Scratch::new();
         assert_eq!(

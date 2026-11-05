@@ -6,8 +6,12 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 const ATTEMPTS: u32 = 1000;
+
+/// A name is never reused within a process, even after its file has gone.
+static NEXT: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug)]
 pub struct TempFile(PathBuf);
@@ -17,8 +21,9 @@ impl TempFile {
     pub fn create() -> io::Result<Self> {
         let dir = env::temp_dir();
         let pid = process::id();
-        for attempt in 0..ATTEMPTS {
-            let path = dir.join(format!("worktree-keeper-{pid}-{attempt}"));
+        for _ in 0..ATTEMPTS {
+            let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = dir.join(format!("worktree-keeper-{pid}-{serial}"));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(_) => return Ok(Self(path)),
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {}

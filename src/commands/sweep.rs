@@ -321,7 +321,7 @@ fn human_size(bytes: u64) -> String {
         unit_bytes *= 1024;
         unit += 1;
     }
-    let tenths = (bytes * 10).div_ceil(unit_bytes);
+    let tenths = (u128::from(bytes) * 10).div_ceil(u128::from(unit_bytes));
     if tenths < 100 {
         format!("{}.{}{}", tenths / 10, tenths % 10, UNITS[unit])
     } else {
@@ -341,6 +341,10 @@ mod tests {
         assert_eq!(human_size(12 * 1024), "12K");
         assert_eq!(human_size(1024 * 1024 + 1), "1.1M");
         assert_eq!(human_size(1024), "1.0K");
+        assert_eq!(human_size(10 * 1024), "10K");
+        assert_eq!(human_size(9 * 1024 + 900), "9.9K");
+        assert_eq!(human_size(1 << 60), "1.0E");
+        assert_eq!(human_size(u64::MAX), "16E");
     }
 
     #[test]
@@ -397,8 +401,12 @@ mod tests {
     #[test]
     fn disk_usage_counts_what_is_inside_a_directory() {
         let scratch = Scratch::new();
-        let empty = disk_usage(scratch.path());
-        fs::write(scratch.path().join("f"), vec![1_u8; 65536]).unwrap();
-        assert!(disk_usage(scratch.path()) > empty);
+        let file = scratch.path().join("f");
+        fs::write(&file, vec![1_u8; 65536]).unwrap();
+        let blocks = |path: &Path| fs::symlink_metadata(path).unwrap().blocks();
+        assert_eq!(
+            disk_usage(scratch.path()),
+            (blocks(scratch.path()) + blocks(&file)) * BLOCK_BYTES
+        );
     }
 }

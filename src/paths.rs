@@ -161,7 +161,7 @@ fn canonical_allowing_missing(path: &Path) -> io::Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::testutil::Scratch;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     fn resolve(holder: &Path, pointer: &str) -> PathBuf {
         ResolvedPath::resolve(holder, OsStr::new(pointer))
@@ -233,6 +233,41 @@ mod tests {
         symlink("b", scratch.path().join("a")).unwrap();
         symlink("a", scratch.path().join("b")).unwrap();
         assert!(ResolvedPath::resolve(scratch.path(), OsStr::new("a")).is_err());
+    }
+
+    #[test]
+    fn a_chain_of_exactly_the_limit_resolves_and_one_more_does_not() {
+        let scratch = Scratch::new();
+        let chain = |length: u32| {
+            let dir = scratch.path().join(format!("chain-{length}"));
+            fs::create_dir(&dir).unwrap();
+            for link in 0..length {
+                symlink(format!("{}", link + 1), dir.join(link.to_string())).unwrap();
+            }
+            ResolvedPath::resolve(&dir, OsStr::new("0"))
+        };
+        assert!(chain(MAX_SYMLINKS).is_ok());
+        assert!(chain(MAX_SYMLINKS + 1).is_err());
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_searched_is_could_not_tell() {
+        let scratch = Scratch::new();
+        let locked = scratch.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads anything, so there the case cannot be arranged.
+        let arranged = fs::read_dir(&locked).is_err();
+        let resolved = ResolvedPath::resolve(&locked, OsStr::new("inside"));
+        let asked = exists(&locked.join("inside"));
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        if arranged {
+            assert!(
+                resolved.is_err(),
+                "a resolved path through an unreadable directory"
+            );
+            assert!(asked.is_err(), "an unreadable directory answered no");
+        }
     }
 
     #[test]

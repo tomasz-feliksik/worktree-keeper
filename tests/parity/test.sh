@@ -225,6 +225,7 @@ t_guard_never_removes() {
   make_worktree keep
   run guard "$WT"
   expect_rc 0
+  expect_out_mention "emptied 1 submodule"
   [[ -d $WT ]] || fail "guard removed the worktree directory"
   git -C "$T/project" worktree list --porcelain | grep -q "^worktree $WT\$" ||
     fail "guard unregistered the worktree"
@@ -544,6 +545,7 @@ t_provision_never_fails_its_caller() {
   err=$(cat "$SCRATCH/stderr")
   expect_rc 0
   [[ $out == *"FAILED"* ]] || fail "a failed direnv allow did not warn: $out"
+  [[ $out != *"worktree .envrc allowed"* ]] || fail "a failed direnv allow claimed trust: $out"
   out=$(cd "$T/project" && PATH=$fake:$PATH WORKTREE_ROOT=$T/root "$WORKTREE" create failing-create 2>"$SCRATCH/stderr") && rc=0 || rc=$?
   err=$(cat "$SCRATCH/stderr")
   expect_rc 0
@@ -600,6 +602,7 @@ t_direnv_gate() {
   run provision "$repo-b"
   (cd "$repo-b" && direnv status | grep -Eq '^Found RC allowed (0|true)$') ||
     fail "worktree not trusted although byte-identical to an allowed root"
+  [[ $out == *"worktree .envrc allowed"* ]] || fail "a working direnv allow was not reported: $out"
 
   # Never further than the root's own trust. A branch whose .envrc differs
   # from the allowed root copy is not trusted: those bytes were never read.
@@ -648,9 +651,11 @@ t_sweep() {
   [[ $out == *"leftover $root/empty-group"* ]] || fail "empty group not reported: $out"
   [[ $out == *"orphan   $root/project/orphan"* ]] || fail "orphan not reported: $out"
   [[ -d $root/project/gone-worktree ]] || fail "dry run deleted a leftover"
+  expect_out_mention "dry run"
 
   run sweep --apply "$root"
   expect_rc 0
+  [[ $out != *"dry run"* ]] || fail "--apply called itself a dry run: $out"
   [[ ! -e $root/project/gone-worktree ]] || fail "--apply did not delete the leftover"
   [[ ! -e $root/empty-group ]] || fail "--apply did not delete the empty group"
   [[ -f $root/project/orphan/work ]] || fail "--apply deleted an orphan's files"

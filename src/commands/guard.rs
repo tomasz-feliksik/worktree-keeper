@@ -397,3 +397,14 @@ fn no_clone_for(
 fn short(commit: &str) -> &str {
     commit.get(..12).unwrap_or(commit)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_commit_is_shortened_to_twelve_characters_when_it_has_them() {
+        assert_eq!(short("0123456789abcdef"), "0123456789ab");
+        assert_eq!(short("0123"), "0123");
+    }
+}
