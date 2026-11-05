@@ -174,6 +174,15 @@ which is the only one left once main has retired the submodule. If no clone can 
 - `direnv status` prints `Found RC allowed 0` on 2.37 and `true` on older versions. Accept both.
 - Never use a `whitelist.prefix` on the placement root. It trusts every future `.envrc` under that path, unseen.
 
+### Merge detection
+
+- `git merge-tree --write-tree` exits 0 on a clean merge and 1 on a conflict. Anything else is "could not check".
+- It writes the trees it makes even when asked only a question, so `GIT_OBJECT_DIRECTORY` points it at a scratch
+  directory, with the real objects as an alternate. That list splits at colons unless the entry is C-quoted.
+- A merge that changes nothing writes no new tree, so only an unintegrated branch shows up an object-store write.
+- `git cherry` is not used: its patch ids ignore whitespace, so a branch that only fixed indentation could match a
+  commit that did not, and be deleted.
+
 ### Seed files
 
 - `.worktreeinclude` is read from the main checkout's HEAD. A branch must not be able to widen what it receives, for the
@@ -287,6 +296,8 @@ A full run takes about four minutes. Every survivor is killed or explained here.
 
 - `paths.rs`, the symlink counter's `+=` as `*=`: a timeout, which is a detection. The counter stays at zero, so a
   symlink cycle never ends, and `cycle` tests hang rather than fail.
+- `submodules.rs`, `is_populated` as always true: a timeout under the 60s limit. Without the limit it is caught, in
+  about two minutes.
 - `remove.rs`, the detach's `!` deleted: the detach is redundant today, because `git worktree remove` has dropped the
   checkout before `git branch -d` runs. It stays as a guard against that order changing.
 

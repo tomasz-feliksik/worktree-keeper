@@ -9,6 +9,7 @@ use crate::commands::guard::{self, OwnChanges, Rules};
 use crate::git::{Git, shown, trimmed};
 use crate::outcome::{CannotTell, Outcome, RefusalKind, Stop};
 use crate::say::{Sink, say};
+use crate::temp::TempDir;
 use crate::worktree::LinkedWorktree;
 
 /// `ls-remote --exit-code`'s status for "no matching refs".
@@ -25,9 +26,11 @@ pub enum BranchFate {
 pub fn run(path: &Path, rules: Rules, fate: BranchFate) -> Outcome {
     let own_changes = rules.own_changes;
     // Before the guard, which empties submodules: "refused" must mean nothing happened.
-    if own_changes == OwnChanges::MustBeClean && fate != BranchFate::Keep {
-        refuse_unmerged_branch(&LinkedWorktree::resolve(path)?)?;
-    }
+    let integrated = if own_changes == OwnChanges::MustBeClean && fate != BranchFate::Keep {
+        refuse_unmerged_branch(&LinkedWorktree::resolve(path)?)? == Merged::Integrated
+    } else {
+        false
+    };
     guard::run(Some(path.to_path_buf()), rules)?;
     let worktree = LinkedWorktree::resolve(path)?;
     let wt = &worktree.path;
@@ -73,7 +76,15 @@ pub fn run(path: &Path, rules: Rules, fate: BranchFate) -> Outcome {
         say(Sink::Stdout, format_args!("kept branch {branch}"));
         return Ok(());
     }
-    delete_local_branch(main, &branch, own_changes)?;
+    if integrated {
+        say(
+            Sink::Stdout,
+            format_args!(
+                "branch {branch} has nothing its target lacks (squash-merged or rebased), so it is deleted though git calls it unmerged"
+            ),
+        );
+    }
+    delete_local_branch(main, &branch, own_changes, integrated)?;
     if fate == BranchFate::DeleteLocalAndRemote {
         delete_remote_branch(main, &remote, &branch)?;
     }
@@ -83,7 +94,10 @@ pub fn run(path: &Path, rules: Rules, fate: BranchFate) -> Outcome {
 /// Whether a worktree's branch is merged, by git's own rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Merged {
+    /// `git branch -d` agrees.
     Yes,
+    /// `git branch -d` would refuse, but merging would add nothing: squashed or rebased.
+    Integrated,
     No,
     NoBranch,
 }
@@ -103,9 +117,50 @@ pub fn merged_state(worktree: &LinkedWorktree, branch: &str) -> Result<Merged, C
     .exit_code(main)?
     {
         Some(0) => Ok(Merged::Yes),
-        Some(1) => Ok(Merged::No),
+        Some(1) => {
+            // Into the main checkout as well: a branch with an upstream is squashed there.
+            if adds_nothing(worktree, branch, &target)? || adds_nothing(worktree, branch, "HEAD")? {
+                Ok(Merged::Integrated)
+            } else {
+                Ok(Merged::No)
+            }
+        }
         _ => Err(CannotTell::new(format!(
             "worktree: cannot inspect {}: git merge-base could not compare {branch} with {target}",
+            main.display()
+        ))),
+    }
+}
+
+/// Whether merging `branch` into `target` would leave `target`'s tree as it is, which is
+/// what a squash or a rebase leaves behind. Deleting such a branch loses no content.
+///
+/// By tree, not `git cherry`: patch ids ignore whitespace, so a branch that fixed only
+/// indentation could match a commit that did not, and be deleted. A merge that conflicts
+/// is "no", because the content cannot be shown to be there, and the branch is kept. So
+/// is a squash that was reverted, because merging would bring the content back.
+///
+/// `merge-tree` writes the trees it makes, so they go to a scratch directory: `status`
+/// asks this too, and a question changes nothing.
+fn adds_nothing(worktree: &LinkedWorktree, branch: &str, target: &str) -> Result<bool, CannotTell> {
+    let main = &worktree.main_checkout;
+    let scratch = TempDir::create().map_err(|error| {
+        CannotTell::new(format!(
+            "worktree: cannot make a temporary directory: {error}"
+        ))
+    })?;
+    let (code, merged) = Git::at(main, ["merge-tree", "--write-tree", target, branch])
+        .objects_in(scratch.path(), &worktree.common.join("objects"))
+        .code_and_output(main)?;
+    match code {
+        Some(0) => {
+            let tree = format!("{target}^{{tree}}");
+            let current = Git::at(main, ["rev-parse", "--verify", tree.as_str()]).probe(main)?;
+            Ok(merged.trim_ascii_end() == current.trim_ascii_end())
+        }
+        Some(1) => Ok(false),
+        _ => Err(CannotTell::new(format!(
+            "worktree: cannot inspect {}: git merge-tree could not merge {branch} into {target}",
             main.display()
         ))),
     }
@@ -126,11 +181,11 @@ fn merge_target(main: &Path, branch: &str) -> Result<String, CannotTell> {
 }
 
 /// Refuses now what `git branch -d` would refuse after the worktree is gone.
-pub fn refuse_unmerged_branch(worktree: &LinkedWorktree) -> Outcome {
+pub fn refuse_unmerged_branch(worktree: &LinkedWorktree) -> Outcome<Merged> {
     let wt = &worktree.path;
     let branch = shown(&Git::at(wt, ["branch", "--show-current"]).probe(wt)?);
     match merged_state(worktree, &branch)? {
-        Merged::Yes | Merged::NoBranch => Ok(()),
+        state @ (Merged::Yes | Merged::Integrated | Merged::NoBranch) => Ok(state),
         Merged::No => Err(Stop::refused_as(
             RefusalKind::UnmergedBranch,
             format!(
@@ -153,10 +208,16 @@ fn upstream_remote(main: &Path, branch: &str) -> Result<String, CannotTell> {
     ))
 }
 
-fn delete_local_branch(main: &Path, branch: &str, own_changes: OwnChanges) -> Outcome {
-    let flag = match own_changes {
-        OwnChanges::MayBeLost => "-D",
-        OwnChanges::MustBeClean => "-d",
+fn delete_local_branch(
+    main: &Path,
+    branch: &str,
+    own_changes: OwnChanges,
+    integrated: bool,
+) -> Outcome {
+    let flag = if own_changes == OwnChanges::MayBeLost || integrated {
+        "-D"
+    } else {
+        "-d"
     };
     let deleted = Git::at(main, ["branch", flag, branch])
         .act(Sink::Stdout)

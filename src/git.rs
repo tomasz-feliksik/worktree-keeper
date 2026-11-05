@@ -77,6 +77,15 @@ impl Git {
         self
     }
 
+    /// Writes new objects to `scratch`, reading existing ones from `objects` too, so that
+    /// asking a question leaves the repository's object store as it was.
+    pub fn objects_in(mut self, scratch: &Path, objects: &Path) -> Self {
+        self.command.env("GIT_OBJECT_DIRECTORY", scratch);
+        self.command
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", quoted_for_git(objects));
+        self
+    }
+
     /// Runs git from `dir`, for a command that must not be told with `-C`.
     pub fn current_dir(mut self, dir: &Path) -> Self {
         self.command.current_dir(dir);
@@ -119,6 +128,16 @@ impl Git {
         Ok(output.status.code())
     }
 
+    /// The exit code and stdout, for a command whose codes mean different things and
+    /// whose output is the answer.
+    pub fn code_and_output(mut self, about: &Path) -> Result<(Option<i32>, Vec<u8>), CannotTell> {
+        let output = self
+            .command
+            .output()
+            .map_err(|error| could_not_start(about, &self.shown, &error))?;
+        Ok((output.status.code(), output.stdout))
+    }
+
     /// Runs an action with git's stdout on `sink` and its stderr on ours, and
     /// returns whether it succeeded. Git's words are the report.
     pub fn act(mut self, sink: Sink) -> io::Result<bool> {
@@ -148,6 +167,19 @@ pub fn flag(flag: &str, path: &Path) -> OsString {
     let mut joined = OsString::from(flag);
     joined.push(path.as_os_str());
     joined
+}
+
+/// Git splits this list at colons unless an entry is quoted, C-style.
+fn quoted_for_git(path: &Path) -> OsString {
+    let mut bytes = vec![b'"'];
+    for byte in path.as_os_str().as_bytes() {
+        if matches!(byte, b'"' | b'\\') {
+            bytes.push(b'\\');
+        }
+        bytes.push(*byte);
+    }
+    bytes.push(b'"');
+    OsString::from_vec(bytes)
 }
 
 /// Lossy text, only for showing to a person.

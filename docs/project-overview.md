@@ -71,11 +71,6 @@ supervise agents (workmux and herdr today), rather than competing with them.
 | Occupancy lock     | Enforces one agent per worktree, using `git worktree lock`                              | The rule is only a convention today, and Git already has the mechanism                   |
 | Local file seeding | Copies chosen gitignored files into new worktrees                                       | Covers local settings that Nix and direnv do not provide                                 |
 
-### Deferred
-
-**Merge detection** (recognising squash-merged and rebased branches). The owner does not use squash merges, so plain
-`git branch -d` is enough for now. It can be added later as a separate task.
-
 ### Out of scope
 
 | Feature                    | Why not                                                                        |
@@ -190,6 +185,16 @@ A repository lists the gitignored files a new worktree needs in a committed `.wo
 `provision` copies them. The list is read from the main checkout's HEAD, so a branch cannot widen what it receives. A
 file must be both listed and ignored. It is never overwritten, it keeps its mode, and a failure warns.
 
+### Merge detection
+
+`remove` deletes a squash-merged or rebased branch without `--force`, though `git branch -d` calls it unmerged. The test
+is whether merging it into its target would leave the target's tree unchanged, so a reverted squash, a conflict or any
+commit the target lacks keeps the branch. It deliberately does not use `git cherry`, whose patch ids ignore whitespace,
+and it is narrower than Worktrunk's six conditions: when in doubt the branch stays, for `--force` to decide. It compares
+with local refs and does not fetch, so a squash merged on a forge counts only once it has been pulled.
+
+The owner does not squash-merge, so this was first deferred. It sits in its own commit, and can be reverted alone.
+
 ### JSON
 
 `status --json` and `check --json` are specified in [`json-schema.md`](./json-schema.md).
@@ -238,7 +243,7 @@ Links: [Worktrunk](https://github.com/max-sixty/worktrunk), [Treehouse](https://
    unit checks and a real deployment are green.
 1. **Fixes and features.** The known defects, read-only check, status with `--json`, in-use detection, occupancy lock,
    then local file seeding. Done, ahead of cutover.
-1. **Later.** Merge detection.
+1. **Later.** Merge detection. Done.
 
 This order is carried by bead priorities, with the port and cutover first. Bead dependencies record only real
 constraints, so a fix can land before cutover if there is a reason to.

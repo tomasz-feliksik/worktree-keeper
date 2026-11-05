@@ -636,6 +636,122 @@ t_lock_refuses_until_unlocked() {
   expect_err "main worktree"
 }
 
+# A commit on a new file, in the worktree or the main checkout.
+commit_file() {
+  echo "$3" >"$1/$2"
+  git -C "$1" add "$2"
+  git -C "$1" commit -q -m "$2"
+}
+
+# Squashed or rebased, the branch's content is in the target although its commits are not,
+# so it goes without --force. Anything the target lacks keeps it, with nothing changed.
+t_integrated_branch_is_deleted() {
+  make_project
+  local main=$T/project
+  has_branch() { git -C "$main" show-ref --verify --quiet "refs/heads/$1"; }
+
+  make_worktree squashed
+  commit_file "$WT" one 1
+  commit_file "$WT" two 2
+  git -C "$main" merge -q --squash squashed
+  git -C "$main" commit -q -m "squashed"
+  run remove "$WT"
+  expect_rc 0
+  expect_out_mention "squash-merged or rebased"
+  [[ ! -e $WT ]] || fail "a squash-merged worktree was not removed"
+  has_branch squashed && fail "a squash-merged branch was kept"
+
+  make_worktree rebased
+  commit_file "$WT" three 3
+  commit_file "$main" elsewhere x
+  git -C "$main" cherry-pick rebased >/dev/null
+  run remove "$WT"
+  expect_rc 0
+  has_branch rebased && fail "a rebased branch was kept"
+
+  # With an upstream it is not ancestor of, squashed into the main checkout all the same.
+  make_worktree upstreamed
+  commit_file "$WT" pushed p
+  git -C "$WT" push -q -u origin upstreamed 2>/dev/null
+  commit_file "$WT" unpushed u
+  git -C "$main" merge -q --squash upstreamed
+  git -C "$main" commit -q -m "squashed"
+  run remove "$WT"
+  expect_rc 0
+  has_branch upstreamed && fail "a branch squashed into the main checkout was kept"
+
+  # One more commit after the squash: the target lacks it.
+  make_worktree added-to
+  commit_file "$WT" four 4
+  git -C "$main" merge -q --squash added-to
+  git -C "$main" commit -q -m "squashed"
+  commit_file "$WT" five 5
+  run remove "$WT"
+  expect_rc 1
+  expect_err "not merged"
+  [[ -f $WT/five ]] || fail "unintegrated work was removed"
+  has_branch added-to || fail "a branch with unintegrated work was deleted"
+
+  # Squashed, then reverted: merging would bring it back, so the target lacks it.
+  make_worktree reverted
+  commit_file "$WT" six 6
+  git -C "$main" merge -q --squash reverted
+  git -C "$main" commit -q -m "squashed"
+  git -C "$main" revert --no-edit HEAD >/dev/null
+  run remove "$WT"
+  expect_rc 1
+  has_branch reverted || fail "a reverted branch was deleted"
+
+  # The target has moved on over the same lines: a conflict cannot show the content is there.
+  make_worktree conflicting
+  commit_file "$WT" seven 7
+  git -C "$main" merge -q --squash conflicting
+  git -C "$main" commit -q -m "squashed"
+  commit_file "$main" seven changed
+  run remove "$WT"
+  expect_rc 1
+  has_branch conflicting || fail "a branch that conflicts was deleted"
+
+  # --keep-branch keeps it, whatever the state.
+  make_worktree kept
+  commit_file "$WT" eight 8
+  git -C "$main" merge -q --squash kept
+  git -C "$main" commit -q -m "squashed"
+  run remove --keep-branch "$WT"
+  expect_rc 0
+  has_branch kept || fail "--keep-branch deleted an integrated branch"
+}
+
+# A question writes no objects, though merge-tree writes them. A colon in the path must not
+# split the list of object directories it reads from.
+t_status_of_an_integrated_branch_writes_nothing() {
+  make_project
+  git clone -q --recurse-submodules "$T/project.git" "$T/co:lon" 2>/dev/null
+  local main=$T/co:lon before after
+  git -C "$main" worktree add -q -b asked "$T/wt-asked" 2>/dev/null
+  commit_file "$T/wt-asked" one 1
+  git -C "$main" merge -q --squash asked
+  git -C "$main" commit -q -m "squashed"
+  before=$(find "$main/.git/objects" | sort)
+  run status --json "$T/wt-asked"
+  expect_rc 0
+  expect_out_mention '"merged": true'
+  expect_out_mention '"verdict": "removable"'
+  after=$(find "$main/.git/objects" | sort)
+  [[ $before == "$after" ]] || fail "status wrote objects:"$'\n'"$(diff <(echo "$before") <(echo "$after") | head)"
+
+  # Not integrated is the case with a new tree to write: the merge would change something.
+  git -C "$main" worktree add -q -b unmerged "$T/wt-unmerged" 2>/dev/null
+  commit_file "$T/wt-unmerged" two 2
+  commit_file "$main" elsewhere x
+  before=$(find "$main/.git/objects" | sort)
+  run status --json "$T/wt-unmerged"
+  expect_rc 0
+  expect_out_mention '"merged": false'
+  after=$(find "$main/.git/objects" | sort)
+  [[ $before == "$after" ]] || fail "status wrote objects:"$'\n'"$(diff <(echo "$before") <(echo "$after") | head)"
+}
+
 # status reads each clone for commits no remote has, and refuses on them.
 t_status_reports_unpushed_commits() {
   make_project

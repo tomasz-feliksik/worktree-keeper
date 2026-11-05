@@ -1,4 +1,4 @@
-//! A throwaway file, removed when dropped. `std` has no temporary files, and the
+//! A throwaway file or directory, removed when dropped. `std` has no temporary files, and the
 //! runtime crates stay at `clap`, `serde` and `serde_json`.
 
 use std::env;
@@ -13,6 +13,22 @@ const ATTEMPTS: u32 = 1000;
 /// A name is never reused within a process, even after its file has gone.
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
+/// Tries names until `make` finds one free. Only a name that is taken moves on: `make`
+/// has to refuse an existing path, which is what stops a planted symlink being followed.
+fn new_name_in(dir: &Path, make: impl Fn(&Path) -> io::Result<()>) -> io::Result<PathBuf> {
+    let pid = process::id();
+    for _ in 0..ATTEMPTS {
+        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!("worktree-keeper-{pid}-{serial}"));
+        match make(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::other("no free temporary name"))
+}
+
 #[derive(Debug)]
 pub struct TempFile(PathBuf);
 
@@ -23,17 +39,14 @@ impl TempFile {
     }
 
     fn create_in(dir: &Path) -> io::Result<Self> {
-        let pid = process::id();
-        for _ in 0..ATTEMPTS {
-            let serial = NEXT.fetch_add(1, Ordering::Relaxed);
-            let path = dir.join(format!("worktree-keeper-{pid}-{serial}"));
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(_) => return Ok(Self(path)),
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Err(io::Error::other("no free temporary file name"))
+        new_name_in(dir, |path| {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map(drop)
+        })
+        .map(Self)
     }
 
     pub fn path(&self) -> &Path {
@@ -48,10 +61,45 @@ impl Drop for TempFile {
     }
 }
 
+/// A new empty directory, removed with what is in it when dropped.
+#[derive(Debug)]
+pub struct TempDir(PathBuf);
+
+impl TempDir {
+    pub fn create() -> io::Result<Self> {
+        Self::create_in(&env::temp_dir())
+    }
+
+    fn create_in(dir: &Path) -> io::Result<Self> {
+        new_name_in(dir, |path| fs::create_dir(path)).map(Self)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        // Best effort, as for a file: what is left harms nothing.
+        drop(fs::remove_dir_all(&self.0));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::Scratch;
+
+    #[test]
+    fn a_temp_directory_is_removed_with_its_contents() {
+        let dir = TempDir::create().unwrap();
+        let path = dir.path().to_path_buf();
+        fs::write(path.join("inside"), "x").unwrap();
+        assert!(path.is_dir());
+        drop(dir);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn a_name_left_by_an_earlier_process_is_skipped() {
@@ -63,6 +111,13 @@ mod tests {
         }
         let file = TempFile::create_in(scratch.path()).unwrap();
         assert_eq!(fs::read(file.path()).unwrap(), b"");
+    }
+
+    #[test]
+    fn a_temp_directory_reports_a_failure_as_itself() {
+        let scratch = Scratch::new();
+        let error = TempDir::create_in(&scratch.path().join("missing")).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotFound);
     }
 
     #[test]

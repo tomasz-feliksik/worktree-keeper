@@ -90,6 +90,9 @@ for people; act on `kind`.
 | `verdict`  | as above                     | Never null. Any field that could not be read makes it `unknown`  |
 | `reasons`  | array of `{ kind, message }` | Never null                                                       |
 
+`merged` is true for a branch `worktree remove` would delete without `--force`: one that `git branch -d` accepts, or one
+with nothing its target lacks, because it was squashed or rebased.
+
 The verdict answers "would `worktree remove`, with no options, succeed?", so unlike `check` it counts an unmerged branch
 as a refusal. `status` exits 0 if every worktree could be read, and 3 if any is `unknown`. A refusal is a normal answer
 to a question about many worktrees, so it does not change the exit status.

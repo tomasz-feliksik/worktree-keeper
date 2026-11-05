@@ -179,7 +179,7 @@ fn row_for_live(path: &Path) -> Row {
         dirty,
         unpushed,
         merged: match merged {
-            Some(Merged::Yes) => Some(true),
+            Some(Merged::Yes | Merged::Integrated) => Some(true),
             Some(Merged::No) => Some(false),
             Some(Merged::NoBranch) | None => None,
         },
@@ -214,7 +214,7 @@ impl Facets {
 /// What `worktree remove` with no options would say, short of acting.
 fn verdict_of(worktree: &LinkedWorktree) -> Outcome {
     guard::assess(worktree, PLAIN_REMOVE).map(drop)?;
-    refuse_unmerged_branch(worktree)
+    refuse_unmerged_branch(worktree).map(drop)
 }
 
 /// A verdict can only be `removable` if everything shown beside it was read.
