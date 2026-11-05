@@ -24,6 +24,9 @@ nix develop --command just parity                     # everything
 nix develop --command just parity sweep actor         # by name, without the t_ prefix
 ```
 
+`just parity-bash` runs the same suite against the frozen Bash tool, to see what the original does. After the foundation
+task, `t_help_never_acts` fails there by design.
+
 It builds the debug binary, then runs the suite against it. It uses scratch repositories with local bare remotes, so it
 works offline. It is **not in `just check` yet**, and it fails until the port is complete.
 
@@ -31,11 +34,12 @@ works offline. It is **not in `just check` yet**, and it fails until the port is
 
 Keep this list current. Anything not listed here must behave exactly as Bash does.
 
-| Behaviour                  | Bash                                     | Rust                            | Why                               |
-| -------------------------- | ---------------------------------------- | ------------------------------- | --------------------------------- |
-| `--help`                   | Exit 2, usage on stderr                  | Exit 0, help on stdout          | `clap`, and the normal convention |
-| Unknown option on `create` | Exit 1, `create: unknown option --bogus` | Exit 2, `clap`'s message        | `clap`; exit 2 means usage anyway |
-| A branch starting with `-` | Refused by hand                          | Rejected by `clap` as an option | Same result                       |
+| Behaviour                   | Bash                                                 | Rust                                                        | Why                                    |
+| --------------------------- | ---------------------------------------------------- | ----------------------------------------------------------- | -------------------------------------- |
+| `--help`                    | Exit 2, usage on stderr                              | Exit 0, help on stdout                                      | `clap`, and the normal convention      |
+| Unknown option, any command | Exit 2 or 1, by command, with a hand-written message | Exit 2, `clap`'s message                                    | `clap`; exit 2 means usage anyway      |
+| A branch starting with `-`  | Refused by hand                                      | Rejected by `clap` as an option                             | Same result                            |
+| No placement root           | The message names `aiHarness.worktree.root`          | The message names `WORKTREE_ROOT` and `worktreeKeeper.root` | The tool should not know its consumers |
 
 `t_help_never_acts` asserts the Bash column, so the foundation task updates it. Its guarantee stays: **`--help` and a
 mistyped option never act**, so nothing may be created, and no branch may be made.
@@ -47,13 +51,17 @@ the current behaviour, then fix each one as its own bug with a regression test.
 
 These contracts live in `ai-harness`, not here, and nothing in this repository would fail if they broke.
 
-| Caller                | How it calls                                           | What it relies on                                                                                                          |
-| --------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| workmux `post_create` | `worktree provision`, in the new worktree              | **Never exits non-zero.** The hook is fail-fast, so a failure leaves a half-created worktree (measured on workmux 0.1.240) |
-| workmux `pre_remove`  | `worktree guard`, in the worktree                      | A non-zero exit aborts removal, even under `workmux remove --force` (measured on 0.1.262). Reads `WM_WORKTREE_PATH`        |
-| herdr create wrapper  | `path=$(worktree create "$branch" "$base")`            | **Stdout is only the path.** Git's output and all messages go to stderr                                                    |
-| herdr remove wrapper  | `worktree guard "$path"`, or `worktree remove "$path"` | Exit status                                                                                                                |
-| The `bd` wrapper      | `worktree actor "$dir"`, with stderr discarded         | Prints the name or nothing, and stays quiet outside Git. It must not fail on a bad directory                               |
+| Caller                | How it calls                                           | What it relies on                                                                                                                                                                        |
+| --------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| workmux `post_create` | `worktree provision`, in the new worktree              | **A failed submodule init must not fail it.** The hook is fail-fast, so a failure leaves a half-created worktree (measured on workmux 0.1.240). Bash does not fully hold this: see below |
+| workmux `pre_remove`  | `worktree guard`, in the worktree                      | A non-zero exit aborts removal, even under `workmux remove --force` (measured on 0.1.262). Reads `WM_WORKTREE_PATH`                                                                      |
+| herdr create wrapper  | `path=$(worktree create "$branch" "$base")`            | **Stdout is only the path.** Git's output and all messages go to stderr                                                                                                                  |
+| herdr remove wrapper  | `worktree guard "$path"`, or `worktree remove "$path"` | Exit status                                                                                                                                                                              |
+| The `bd` wrapper      | `worktree actor "$dir"`, with stderr discarded         | Prints the name or nothing, and stays quiet outside Git. It must not fail on a bad directory                                                                                             |
+
+**`provision` and failure.** A failed submodule init warns and exits 0, and a test covers that. But a failed
+`direnv allow` exits non-zero, and a bad path exits 1. Nothing tests either. Port them as they are; a separate bug
+covers the fix.
 
 **`WM_WORKTREE_PATH`.** `guard`'s default path is `$WM_WORKTREE_PATH`, then the current directory. That is the tool's
 one piece of knowledge about a specific caller. Keep it for parity, because `t_guard_reads_workmux_env` tests it.
@@ -121,6 +129,13 @@ which is the only one left once main has retired the submodule. If no clone can 
 - `direnv status` prints `Found RC allowed 0` on 2.37 and `true` on older versions. Accept both.
 - Never use a `whitelist.prefix` on the placement root. It trusts every future `.envrc` under that path, unseen.
 
+## Packaging
+
+The package wraps `git` and `direnv` into its `PATH`, because a hook cannot rely on the caller's, and without `direnv`
+the tool would silently skip trust. They are also on `PATH` for tests run by `nix flake check`. The in-use story adds
+`lsof` on macOS. The Bash tool also needed coreutils, findutils, gawk, sed, grep and diffutils; the Rust port should
+not.
+
 ## Rust traps this port can avoid or introduce
 
 - **Do not lose Bash's strictness.** `probe()` exits 3 on any failure. Make "could not check" a distinct type, so it
@@ -170,6 +185,14 @@ preserve. The needle-replacing mechanism does not carry over: use `cargo-mutants
 | direnv trust given when the main checkout is not allowed       | `direnv_gate`                          |
 | direnv trust given when the content differs                    | `direnv_gate`                          |
 | Provision skips submodules                                     | `create_places_and_provisions`         |
+
+### Guarantees with no test yet
+
+The suite has gaps of its own. The gate task adds these:
+
+- Unpushed submodule commits are refused **under `--force`**. Only dirty submodules are tested under it.
+- A remote branch is deleted last, and only with `--delete-remote`.
+- Sweep leaves locked registrations alone.
 
 ## Testing a port
 

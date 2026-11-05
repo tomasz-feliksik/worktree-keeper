@@ -139,8 +139,8 @@ change.
   refuses. Nothing is lost because the branch stays, but "refused" means the worktree is already gone. The branch should
   be checked first.
 
-One intended behaviour change: `--help` will exit 0, where the Bash tool exits 2. That comes with `clap`, which still
-exits 2 on usage errors and so keeps the contract.
+The intended differences from Bash, such as `--help` exiting 0, are listed in the
+[porting guide](./porting-guide.md#intended-differences-from-bash).
 
 ## Technical decisions
 
@@ -218,9 +218,12 @@ Links: [Worktrunk](https://github.com/max-sixty/worktrunk), [Treehouse](https://
    Bash stays in production.
 1. **Cutover.** Add the input to `ai-harness`, turn its module into the adapter, and delete the Bash tool only once its
    unit checks and a real deployment are green.
-1. **Fixes.** The slug collision and the removal order.
-1. **Features.** Read-only check, status with `--json`, in-use detection, occupancy lock, then local file seeding.
+1. **Fixes and features.** The known defects, read-only check, status with `--json`, in-use detection, occupancy lock,
+   then local file seeding.
 1. **Later.** Merge detection.
+
+This order is carried by bead priorities, with the port and cutover first. Bead dependencies record only real
+constraints, so a fix can land before cutover if there is a reason to.
 
 ## Open questions
 
