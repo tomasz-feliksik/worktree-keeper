@@ -25,13 +25,14 @@ nix flake check                      # builds, Clippy, formatting, Home Manager 
 - **The guarantees in the docs are the product.** Never weaken one to make a test or a workflow easier. Show that each new
   test fails when its guarantee is broken.
 - **"Could not check" is never "safe".** It exits 3. Do not let it turn into success or an empty result.
-- **No `nix-lib`.** It is private, and this flake has to build for others if the repository goes public. This is a
+- **No `nix-lib`.** It is private, and this flake has to build for others, because the repository is public. This is a
   deliberate exception to the usual project setup.
 - **No import-from-derivation.** `ai-harness` evaluates this flake with it disabled and with warnings as errors.
 - **Runtime crates stay at `clap`, `serde` and `serde_json`.** Run `git` as a program, not through `git2` or `gix`.
 - **Keep it independent of its consumers.** No knowledge of `bd` or `ai-harness` belongs in the tool. The one exception,
   `WM_WORKTREE_PATH`, is explained in the porting guide.
-- **Docs stay publishable:** no private paths or another repository's bead ids.
+- **Everything here is public, the tracker too:** `refs/dolt/data` is readable by anyone, so docs and beads carry no
+  private paths, private repository names or another repository's bead ids.
 - **`reference/bash/` is frozen.** Read it, do not edit it. It is deleted after cutover.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:cdcea925 -->
