@@ -491,6 +491,32 @@ t_create_places_and_provisions() {
   [[ -e $T/root/project/feat-place/sub/nested/.git ]] || fail "create did not provision nested submodules"
 }
 
+# feat/x and feat-x share a slug. Asking for the second must refuse, naming both,
+# rather than hand back a worktree on the first. Asking again for the first still
+# returns its path; a directory that is no worktree at all is refused too.
+t_create_refuses_a_slug_collision() {
+  make_project
+  local first=$T/root/project/feat-x created
+  created=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" create feat/x 2>/dev/null)
+  [[ $created == "$first" ]] || fail "setup: placed at '$created'"
+  out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" create feat-x 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 1
+  expect_err "feat/x"
+  expect_err "feat-x"
+  [[ -z $out ]] || fail "a refused create printed a path: $out"
+  out=$(cd "$T/project" && WORKTREE_ROOT=$T/root "$WORKTREE" create feat/x 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 0
+  [[ $out == "$first" ]] || fail "the same branch did not get its path back: $out"
+  mkdir -p "$T/root-outside/project/not-git"
+  out=$(cd "$T/project" && WORKTREE_ROOT=$T/root-outside "$WORKTREE" create not/git 2>"$SCRATCH/stderr") && rc=0 || rc=$?
+  err=$(cat "$SCRATCH/stderr")
+  expect_rc 1
+  expect_err "not a worktree"
+  [[ -z $out ]] || fail "a refused create printed a path: $out"
+}
+
 t_direnv_gate() {
   command -v direnv >/dev/null || {
     fail "direnv not on PATH — the test environment is incomplete"

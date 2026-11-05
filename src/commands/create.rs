@@ -7,9 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::commands::provision;
-use crate::git::{Git, trimmed_path};
+use crate::git::{Git, shown, trimmed_path};
 use crate::outcome::{CannotTell, Outcome, Stop};
-use crate::paths;
+use crate::paths::{self, cannot_read};
 use crate::say::{Sink, print_path, say};
 use crate::worktree::parent_of;
 
@@ -30,6 +30,7 @@ pub fn run(branch: &str, base: Option<&str>) -> Outcome {
     let path = root.join(name).join(slug_of(branch));
 
     if paths::exists(&path)? {
+        check_existing(&path, branch)?;
         say(
             Sink::Stderr,
             format_args!("{} exists — not creating it again", path.display()),
@@ -40,6 +41,34 @@ pub fn run(branch: &str, base: Option<&str>) -> Outcome {
     }
     print_path(&path)
         .map_err(|error| Stop::refused(format!("cannot print {}: {error}", path.display())))
+}
+
+/// `feat/x` and `feat-x` share a slug, so an existing path may be another branch's.
+/// Handing it back would let an agent work on the wrong branch, believing otherwise.
+fn check_existing(path: &Path, branch: &str) -> Outcome {
+    let top = Git::at(path, ["rev-parse", "--show-toplevel"]).answer(path)?;
+    let here = path
+        .canonicalize()
+        .map_err(|error| cannot_read(path, &error))?;
+    if top.map(trimmed_path) != Some(here) {
+        return Err(Stop::refused(format!(
+            "{} exists and is not a worktree, so it cannot be used for branch {branch}",
+            path.display()
+        )));
+    }
+    let current = shown(&Git::at(path, ["branch", "--show-current"]).probe(path)?);
+    if current == branch {
+        return Ok(());
+    }
+    let current = if current.is_empty() {
+        "a detached HEAD"
+    } else {
+        current.as_str()
+    };
+    Err(Stop::refused(format!(
+        "{} exists on {current}, not on the requested branch {branch}: their names share a slug",
+        path.display()
+    )))
 }
 
 fn placement_root() -> Outcome<PathBuf> {
