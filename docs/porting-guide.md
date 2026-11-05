@@ -283,9 +283,10 @@ this when I break it" is.
 tested", never as a pass. Here they are generated replacements that have no value of the right type, such as
 `Ok(Default::default())` for a type with no default. The functions they target are covered by mutants that did run.
 
-Every survivor is killed or explained here. These are explained rather than killed:
+A full run takes about four minutes. Every survivor is killed or explained here. These are explained rather than killed:
 
-- `paths.rs`, the symlink limit's `>` as `==`: equivalent. The counter goes up by one and returns at the first excess.
+- `paths.rs`, the symlink counter's `+=` as `*=`: a timeout, which is a detection. The counter stays at zero, so a
+  symlink cycle never ends, and `cycle` tests hang rather than fail.
 - `remove.rs`, the detach's `!` deleted: the detach is redundant today, because `git worktree remove` has dropped the
   checkout before `git branch -d` runs. It stays as a guard against that order changing.
 

@@ -636,6 +636,23 @@ t_lock_refuses_until_unlocked() {
   expect_err "main worktree"
 }
 
+# status reads each clone for commits no remote has, and refuses on them.
+t_status_reports_unpushed_commits() {
+  make_project
+  make_worktree holding
+  run status --json "$WT"
+  expect_rc 0
+  expect_out_mention '"unpushed": false'
+  expect_out_mention '"verdict": "removable"'
+  git -C "$WT/sub" checkout -q -b work
+  echo x >>"$WT/sub/README"
+  git -C "$WT/sub" commit -q -am unpushed
+  run status --json "$WT"
+  expect_rc 0
+  expect_out_mention '"unpushed": true'
+  expect_out_mention '"kind": "unpushed_submodule"'
+}
+
 # Every worktree under the root gets a verdict; an orphan is unknown, never safe, and
 # makes the exit status 3. Nothing is deleted.
 t_status_lists_every_worktree() {
@@ -760,6 +777,17 @@ t_seed_failure_warns_and_exits_zero() {
     [[ ! -e $T/wt-seeded/.env ]] || fail "left a partial copy behind"
   fi
   [[ $(cat "$T/wt-seeded/config/app.local") == local ]] || fail "one failure stopped the rest"
+
+  # The target cannot be written: not the same as already existing, so it has to warn.
+  git -C "$T/project" worktree add -q -b seeded-ro "$T/wt-seeded-ro" 2>/dev/null
+  rm -rf "$T/wt-seeded-ro/.gitmodules" "$T/wt-seeded-ro/sub"
+  chmod 555 "$T/wt-seeded-ro"
+  run provision "$T/wt-seeded-ro"
+  chmod 755 "$T/wt-seeded-ro"
+  expect_rc 0
+  if [[ $EUID -ne 0 ]]; then
+    expect_out_mention "not copying .env"
+  fi
 
   # The whole step failing: git cannot list the files.
   git -C "$T/project" worktree add -q -b seeded-b "$T/wt-seeded-b" 2>/dev/null

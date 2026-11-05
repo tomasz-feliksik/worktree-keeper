@@ -143,8 +143,9 @@ fn make_parents_inside(worktree: &Path, file: &Path) -> io::Result<()> {
                     at.display()
                 )));
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => fs::create_dir(&at)?,
-            Err(error) => return Err(error),
+            // Anything else that stopped the look stops `create_dir` too, which never
+            // follows a symlink, so it needs no case of its own.
+            Err(_) => fs::create_dir(&at)?,
         }
     }
     Ok(())
