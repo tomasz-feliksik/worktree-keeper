@@ -1,5 +1,7 @@
 # Agent Instructions
 
+**Read `CLAUDE.md` first: it has this repository's rules and where to start.**
+
 This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 
 > **Architecture in one line:** Issues live in a local Dolt database
