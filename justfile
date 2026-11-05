@@ -35,20 +35,22 @@ lint: fmt-check clippy audit deny markdownlint
 test:
     cargo test
 
-# The black-box suite. Not part of `check` until the port reaches parity.
+# The black-box suite: the guarantees, against the real binary and real git.
 parity *tests:
     cargo build
     WORKTREE="$PWD/target/debug/worktree" bash tests/parity/test.sh {{tests}}
 
-# The same suite against the frozen Bash tool, to see what the original does.
-# After the foundation task, t_help_never_acts fails here by design.
+# The same suite against the frozen Bash tool, to see what the original does. The
+# tests for the listed differences from Bash fail here by design: see the porting guide.
 parity-bash *tests:
     mkdir -p target
     { printf '#!/usr/bin/env bash\nset -euo pipefail\n'; cat reference/bash/worktree.sh; } > target/worktree-bash
     chmod +x target/worktree-bash
     WORKTREE="$PWD/target/worktree-bash" bash tests/parity/test.sh {{tests}}
 
-mutants:
-    cargo mutants
+# Judged by the parity suite too, through tests/parity.rs. Read `unviable` as "not
+# tested", never as a pass.
+mutants *args:
+    cargo mutants --timeout 300 {{args}} -- -- --include-ignored
 
-check: lint test
+check: lint test parity
