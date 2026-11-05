@@ -18,15 +18,23 @@
     ];
     craneLib = (inputs.crane.mkLib pkgs).overrideToolchain toolchain;
     src = craneLib.cleanCargoSource ../.;
+    # The programs the tool runs. They are on PATH for its own tests, and wrapped
+    # into the package because a hook cannot rely on the caller's PATH.
+    runtimePrograms = [pkgs.git pkgs.direnv];
     commonArgs = {
       inherit src;
       strictDeps = true;
+      nativeCheckInputs = runtimePrograms;
     };
     cargoArtifacts = craneLib.buildDepsOnly commonArgs;
   in {
     packages.default = craneLib.buildPackage (commonArgs
       // {
         inherit cargoArtifacts;
+        nativeBuildInputs = [pkgs.makeWrapper];
+        postInstall = ''
+          wrapProgram "$out/bin/worktree" --prefix PATH : ${pkgs.lib.makeBinPath runtimePrograms}
+        '';
         meta.mainProgram = "worktree";
       });
     checks = {
