@@ -1,6 +1,6 @@
 //! Running `git` as a program.
 //!
-//! [`Git::probe`] is the port of `probe()`: on any failure it stops loudly with
+//! [`Git::probe`] on any failure stops loudly with
 //! the command, the path it was about and git's own words. The one probe whose
 //! failure used to be silent is the one that decides whether a commit is about to
 //! be lost; a probe that cannot answer is "unknown", and unknown refuses.

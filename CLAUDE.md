@@ -5,7 +5,7 @@ tool, and is in production through `ai-harness`.
 
 ## Start here
 
-1. `bd ready` for what can be done next. The work is in two epics: `worktree-keeper-elj` and `worktree-keeper-6fl`.
+1. `bd ready` for what can be done next.
 1. `docs/project-overview.md` for what this is, the agreed scope and every decision. Read it before proposing features.
 1. `docs/internals.md` before changing any command. It has what the code cannot tell you: callers, Git facts and
    the guarantee table.

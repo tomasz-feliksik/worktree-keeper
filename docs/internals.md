@@ -1,98 +1,33 @@
-# Porting guide
+# Internals
 
-What the Rust tool kept from the Bash tool it replaced, and what it must keep doing. Scope and decisions are in
-[`project-overview.md`](./project-overview.md); the work is tracked in `bd`, starting with `bd ready`.
+What the code cannot tell you: who calls this tool and what they rely on, the Git facts behind its odd-looking shapes,
+and how its guarantees are tested. Read it before changing a command. Scope and decisions are in
+[`project-overview.md`](./project-overview.md), and work is tracked in `bd`, starting with `bd ready`.
 
-## What to read
-
-| File                                         | What it is                                                                                                |
-| -------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `git show v0.1.2:reference/bash/worktree.sh` | The Bash tool as it was deleted, frozen from `ai-harness` commit `2be0a66`. **Its comments are the spec** |
-| `tests/black_box/`                           | The black-box tests, through the real binary                                                              |
-| This document                                | What neither file says: callers, Git facts, the guarantee table and how to cut over                       |
-
-Read the comments on a function before changing what it became. Most of them record a failure that was measured on a
-real repository, and the code is often shaped around it in ways that look removable.
-
-The first 27 tests came from `ai-harness`, and passed against the Bash build on 2026-11-05. The port added the rest, for
-the defects it fixed and the commands it added. The two `bd` wrapper tests stayed in `ai-harness`, because the wrapper
-does.
-
-## Running the black-box suite
-
-```bash
-nix develop --command just black-box                  # everything
-nix develop --command just black-box sweep actor      # tests whose names contain either word
-```
-
-It builds the debug binary, then runs the suite against it, and reports how many tests ran. A word that matches no test
-fails rather than passing with none. It uses scratch repositories with local bare remotes, so it works offline.
-`cargo test`, and so `just check`, runs it too.
-
-`nix flake check` also runs it as `checks.<system>.black-box`, in the Nix sandbox, against the wrapped package instead
-of the debug binary, by setting `WORKTREE_UNDER_TEST`. That is the only place the package itself gets tested.
-`checks.<system>.wrapper` then runs `provision` with nothing on `PATH`, to prove the wrapper supplies `git` and
-`direnv`. Because the wrapper comes first on `PATH`, a test cannot fake either program there: make the real one fail
-instead, as `provision_never_fails_its_caller` does.
-
-Mutation testing stays out of the sandbox: it needs hundreds of incremental builds, and its survivors are read rather
-than gated on. It runs broken builds of a tool that deletes things as your own user, so `tests/black_box/` keeps every
-path inside its scratch directory.
-
-## Intended differences from Bash
-
-Keep this list current. Anything not listed here must behave exactly as Bash does.
-
-| Behaviour                    | Bash                                                 | Rust                                                          | Why                                          |
-| ---------------------------- | ---------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------- |
-| `--help`                     | Exit 2, usage on stderr                              | Exit 0, help on stdout                                        | `clap`, and the normal convention            |
-| Unknown option, any command  | Exit 2 or 1, by command, with a hand-written message | Exit 2, `clap`'s message                                      | `clap`; exit 2 means usage anyway            |
-| A branch starting with `-`   | Refused by hand                                      | Rejected by `clap` as an option                               | Same result                                  |
-| Placement                    | `<root>/<repo>/<slug>`, from a configured root       | `<parent>/<repo>.worktrees/<slug>`, with nothing to configure | See below                                    |
-| `status`, `sweep` default    | The configured root, across repositories             | The current repository; refused outside one                   | There is no root any more                    |
-| `sweep --repo`, no directory | The configured root                                  | Beside each repository named, from anywhere                   | There is no root any more                    |
-| Where `create` can run       | Any repository                                       | Refused unless the git directory is named `.git`              | Elsewhere the path is wrong or inside `.git` |
-| Paths with spaces            | Split by `awk`, so misread                           | Read with `-z` and split at the tab                           | The limit was never intended                 |
-| A probe's stderr             | Mixed into some parsed output                        | Never part of what is parsed                                  | Parsing a warning is a wrong answer          |
-| A failed `git worktree add`  | Git's own status, such as 128                        | Exit 1                                                        | The exit contract has no 128                 |
-| Unreadable directory entry   | A short list                                         | Exit 3                                                        | A short list is what this tool prevents      |
-
-The `--help` guarantee stays: **`--help` and a mistyped option never act**, so nothing may be created, and no branch may
-be made.
-
-These began as Bash behaviour and were fixed after parity, each as its own commit with a regression test:
-
-| Behaviour                         | Bash                                                            | Rust                                          |
-| --------------------------------- | --------------------------------------------------------------- | --------------------------------------------- |
-| `create` on a path already in use | Exit 0, printing it, whichever branch is there                  | Exit 1, naming both branches                  |
-| `remove` on an unmerged branch    | Removes the worktree, then exit 1                               | Exit 1 first, with nothing changed            |
-| `remove` and other registrations  | Prunes the repository, deleting other entries' clones unchecked | Removes only its own                          |
-| `remove` and a silent remote      | Reads it as having no such branch, then deletes locally         | Reads it before deleting anything, and exit 3 |
-| `provision`, any failing step     | A failed `direnv allow` exits non-zero and fails workmux's hook | Warns and exits 0                             |
+Read the comments on a function before changing it, too. Most of them record a failure measured on a real repository.
 
 ## Who calls this tool
 
 These contracts live in `ai-harness`, not here, and nothing in this repository would fail if they broke.
 
-| Caller                | How it calls                                           | What it relies on                                                                                                                                                                        |
-| --------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| workmux `post_create` | `worktree provision`, in the new worktree              | **A failed submodule init must not fail it.** The hook is fail-fast, so a failure leaves a half-created worktree (measured on workmux 0.1.240). Bash does not fully hold this: see below |
-| workmux `pre_remove`  | `worktree guard`, in the worktree                      | A non-zero exit aborts removal, even under `workmux remove --force` (measured on 0.1.262). Reads `WM_WORKTREE_PATH`                                                                      |
-| herdr create wrapper  | `path=$(worktree create "$branch" "$base")`            | **Stdout is only the path.** Git's output and all messages go to stderr                                                                                                                  |
-| herdr remove wrapper  | `worktree guard "$path"`, or `worktree remove "$path"` | Exit status                                                                                                                                                                              |
-| The `bd` wrapper      | `worktree actor "$dir"`, with stderr discarded         | Prints the name or nothing, and stays quiet outside Git. It must not fail on a bad directory                                                                                             |
+| Caller                | How it calls                                            | What it relies on                                                                                                                               |
+| --------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| workmux `post_create` | `worktree provision`, in the new worktree               | **A failed submodule init must not fail it.** The hook is fail-fast, so a failure leaves a half-created worktree (measured on workmux 0.1.240). |
+| workmux `pre_remove`  | `worktree guard --ignore-in-use`, in the worktree       | A non-zero exit aborts removal, even under `workmux remove --force` (measured on 0.1.262). Reads `WM_WORKTREE_PATH`                             |
+| herdr create wrapper  | `path=$(worktree create "$branch" "$base")`             | **Stdout is only the path.** Git's output and all messages go to stderr                                                                         |
+| herdr remove wrapper  | `worktree remove "$path"`; a key adds `--ignore-in-use` | Exit status                                                                                                                                     |
+| The `bd` wrapper      | `worktree actor "$dir"`, with stderr discarded          | Prints the name or nothing, and stays quiet outside Git. It must not fail on a bad directory                                                    |
 
 **`provision` and failure.** Every step warns and exits 0, and `provision_never_fails_its_caller` holds that. The one
 refusal is a path that is not a directory: no real hook passes one, there is no worktree to half-create, and exit 0
 would hide a caller's typo.
 
 **`WM_WORKTREE_PATH`.** `guard`'s default path is `$WM_WORKTREE_PATH`, then the current directory. That is the tool's
-one piece of knowledge about a specific caller. Keep it for parity, because `guard_reads_workmux_env` tests it. workmux
-also runs the hook inside the worktree, so it can probably be dropped at cutover. Confirm that first.
+one piece of knowledge about a specific caller. `guard_reads_workmux_env` holds it. workmux also runs the hook inside
+the worktree, so it can probably be dropped. Nobody has confirmed that yet.
 
-**Placement.** `src/placement.rs` holds the one rule, and every command asks it. `WORKTREE_ROOT` and
-`worktreeKeeper.root` are gone. Worktrees that already live elsewhere keep working: `guard` and `remove` take a path,
-and `status` lists what git has registered, wherever it is.
+**Placement.** `src/placement.rs` holds the one rule, and every command asks it. Worktrees that already live elsewhere
+keep working: `guard` and `remove` take a path, and `status` lists what git has registered, wherever it is.
 
 ## In-use detection
 
@@ -105,9 +40,9 @@ server through a real client's key bindings.
   own shell is reported, and a plain `guard` or `remove` from a key always refuses.
 - **Popups differ from panes in two more ways.** A popup sets `HERDR_ACTIVE_WORKSPACE_ID`, not `HERDR_WORKSPACE_ID`, and
   it closes when its command exits, so a refusal disappears unless the command waits.
-- **So cutover has a decision to make.** The refusal is correct when nothing owns those processes. A caller that closes
-  its own panes passes `--ignore-in-use`, which leaves every other check in force. `--force` does not override it, on
-  purpose: it accepts losing changes already made, not pulling a directory from under a working process.
+- **So a caller decides.** The refusal is correct when nothing owns those processes. A caller that closes its own panes
+  passes `--ignore-in-use`, which leaves every other check in force. `--force` does not override it, on purpose: it
+  accepts losing changes already made, not pulling a directory from under a working process.
 - **The override leaves a record.** `guard` and `remove` with `--ignore-in-use` ask nothing, and print
   `still running: <name> (pid <pid>)` for each process they find. Neither stops a process: that stays with whoever
   closes the panes.
@@ -122,7 +57,7 @@ server through a real client's key bindings.
 ## Git facts the code depends on
 
 Each of these was measured, and each looks wrong enough for someone to "fix" it. Dates and versions are in the comments
-of the Bash tool: `git show v0.1.2:reference/bash/worktree.sh`.
+of [the Bash tool](#what-changed-from-the-bash-tool).
 
 ### Submodule clones
 
@@ -171,7 +106,8 @@ which is the only one left once main has retired the submodule. If no clone can 
   registration alone, deletes a clean one's admin directory itself, and leaves locked ones alone, and `remove` does not
   prune at all.
 - The worktree is detached before removal, so that `git branch -d` can delete the branch. `git worktree remove` has
-  dropped the checkout by then anyway, so a mutant that skips the detach survives; see below.
+  dropped the checkout by then anyway, so a mutant that skips the detach survives: see
+  [mutation testing](#mutation-testing). If `git worktree remove` itself fails, the worktree is left detached.
 - A remote branch is deleted last. Deleting it first and then failing locally leaves a branch with no upstream.
 
 ### direnv
@@ -203,27 +139,46 @@ which is the only one left once main has retired the submodule. If no clone can 
 
 The package wraps `git` and `direnv` into its `PATH`, because a hook cannot rely on the caller's, and without `direnv`
 the tool would silently skip trust. They are also on `PATH` for tests run by `nix flake check`. macOS also gets `lsof`,
-for in-use detection. The Bash tool also needed coreutils, findutils, gawk, sed, grep and diffutils; the Rust port does
-not.
+for in-use detection.
 
-## Rust traps this port can avoid or introduce
+## Rules the code keeps
 
-- **Do not lose Bash's strictness.** `probe()` exits 3 on any failure. Make "could not check" a distinct type, so it
-  cannot be mapped to success or to an empty result by accident. A list that comes back short because a probe failed is
-  the exact failure this tool exists to prevent.
-- **Bash's `git` inherits the caller's environment.** Keep that for configuration. Set `GIT_INDEX_FILE` only on the one
-  command that needs it.
+- **"Could not check" is its own type.** `probe()` exits 3 on any failure, so it cannot be mapped to success or to an
+  empty result by accident. A list that comes back short because a probe failed is the exact failure this tool exists to
+  prevent.
+- **`git` inherits the caller's environment**, for configuration. Set `GIT_INDEX_FILE` only on the one command that
+  needs it.
 - **Paths are bytes.** Use `OsStr` and `Path`, not `String`, for anything from Git or the filesystem. Git quotes unusual
-  paths in `ls-files` output by default, so prefer `-z`, which also fixes a limitation in the Bash version.
-- **The Bash version's `awk` parsing splits on whitespace.** Do not copy that limit for paths with spaces.
+  paths in `ls-files` output by default, so prefer `-z`.
 - **`std::process::Command` output is not text.** Decode only what needs decoding, and print paths lossily only for
   humans.
 
-## Guarantee table
+## Testing
 
-Each row is a deliberate break that has to turn the named test red. The first 28 came from `ai-harness`, and the rest
-from this port. Every row was re-run against the Rust on 2026-11-05: the source was edited as the row says, and the
-named test went red with its own failure message rather than a crash. `cargo-mutants` covers what these rows do not.
+### The black-box suite
+
+```bash
+nix develop --command just black-box                  # everything
+nix develop --command just black-box sweep actor      # tests whose names contain either word
+```
+
+`tests/black_box/` drives the real binary against real git, in scratch repositories with local bare remotes, so it works
+offline. `cargo test`, and so `just check`, runs it too. It reports how many tests ran, and in `just black-box` a word
+that matches no test fails rather than passing with none.
+
+`nix flake check` also runs it as `checks.<system>.black-box`, in the Nix sandbox, against the wrapped package instead
+of the debug binary, by setting `WORKTREE_UNDER_TEST`. That is the only place the package itself gets tested, and the
+package's own build skips the suite, so that a consumer does not have to run it. `checks.<system>.wrapper` then runs
+`provision` with nothing on `PATH`, to prove the wrapper supplies `git` and `direnv`. Because the wrapper comes first on
+`PATH`, a test cannot fake either program there: make the real one fail instead, as `provision_never_fails_its_caller`
+does.
+
+### Guarantee table
+
+Each row is a deliberate break that has to turn the named test red. A new guarantee gets a row, and is shown to fail:
+"it passes" is not the claim; "it passes, and it fails like this when I break it" is. The rows were last re-run one by
+one on 2026-11-05, when the suite was still shell. It has kept their names, and full mutation runs have been read since.
+`cargo-mutants` covers what these rows do not.
 
 | Guarantee broken by the mutant                                 | Test that must fail                             |
 | -------------------------------------------------------------- | ----------------------------------------------- |
@@ -289,49 +244,74 @@ named test went red with its own failure message rather than a crash. `cargo-mut
 | A failed copy leaves a partial file                            | `seed_failure_warns_and_exits_zero`             |
 | The seed step's failure fails provision                        | `seed_failure_warns_and_exits_zero`             |
 
-Run mutation testing with `nix develop --command just mutants`.
+### Mutation testing
 
-## Testing a port
-
-For each command: read the Bash and its comments, write or enable the black-box tests, port it, then break each of its
-guarantees in the Rust and watch the matching test fail. "It passes" is not the claim; "it passes, and it fails like
-this when I break it" is.
+Run it with `nix develop --command just mutants`. It stays out of the sandbox, because it needs hundreds of incremental
+builds and its survivors are read rather than gated on. It runs broken builds of a tool that deletes things as your own
+user, so `tests/black_box/` keeps every path inside its scratch directory.
 
 `cargo-mutants` reports mutants that fail to compile as `unviable`, separately from `caught`. Read those as "not
 tested", never as a pass. Here they are generated replacements that have no value of the right type, such as
 `Ok(Default::default())` for a type with no default. The functions they target are covered by mutants that did run.
 
-A full run takes about four minutes. Every survivor is killed or explained here. These are explained rather than killed:
+A full run takes about six minutes. Every survivor is killed or explained here. These are explained rather than killed:
 
 - `paths.rs`, the symlink counter's `+=` as `*=`: a timeout, which is a detection. The counter stays at zero, so a
   symlink cycle never ends, and `cycle` tests hang rather than fail.
-- `submodules.rs`, `is_populated` as always true: a timeout under the 60s limit. Without the limit it is caught, in
+- `submodules.rs`, `is_populated` as always true: can time out under the 60s limit. Without the limit it is caught, in
   about two minutes.
 - `remove.rs`, the detach's `!` deleted: the detach is redundant today, because `git worktree remove` has dropped the
   checkout before `git branch -d` runs. It stays as a guard against that order changing.
+- `provision.rs`, `same_bytes` as always true: survives some full runs and is caught on its own. Tracked as
+  `worktree-keeper-elj.4`.
 
-## Cutover
+## What consumers need
 
-This work happens in `ai-harness`, which fetches this public repository with no credential. Its evaluation disables
-import-from-derivation and aborts on warnings. **This flake must stay evaluable under those settings**, which is why it
-uses fenix's `stable` rather than `fromToolchainFile`. Test Nix changes from a shell with this set:
+`ai-harness` fetches this public repository with no credential, and its evaluation disables import-from-derivation and
+aborts on warnings. **This flake must stay evaluable under those settings**, which is why it uses fenix's `stable`
+rather than `fromToolchainFile`. Test Nix changes from a shell with this set. CI's `test` job sets the same two.
 
 ```bash
 export NIX_CONFIG=$'abort-on-warn = true\nallow-import-from-derivation = false'
 nix flake check
 ```
 
-CI's `test` job sets the same two.
+The `bd` wrapper and its tests live in `ai-harness`, because this tool knows nothing about `bd`. So do the workmux and
+herdr hooks and their unit checks, which are the integration proof. A caller that closes its own panes passes
+`--ignore-in-use`, and no other does: see [in-use detection](#in-use-detection).
 
-| In `ai-harness`                                            | Change                                                                                                                                            |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `flake.nix`                                                | Add this flake as an input, pinned to a release tag, with `follows` for shared inputs                                                             |
-| `modules/packages/worktree.nix`                            | Re-export `packages.worktree`, as `usage-ledger.nix` does                                                                                         |
-| `modules/home/worktree.nix`                                | Thin adapter: import `homeModules.default`, expose `worktreeKeeper.package` as `aiHarness.worktree.package`, and delete `aiHarness.worktree.root` |
-| `wrapBeads`, `t_bd_wrapper`, `t_bd_records_worktree_actor` | Stay there, along with the two wrapper mutants                                                                                                    |
-| `checks.worktree`, `checks.worktree-mutations`             | Delete with `modules/packages/_worktree/`, and update `checks.output-paths`                                                                       |
-| workmux and herdr unit checks                              | Keep. These are the integration proof                                                                                                             |
-| workmux and herdr hooks                                    | Callers that close their own panes pass `--ignore-in-use`, and no others: see [in-use detection](#in-use-detection)                               |
+## What changed from the Bash tool
 
-This is done. `reference/bash/` was deleted here once a real host ran the Rust tool, and tag `v0.1.2` is the last that
-has it.
+This tool replaced a Bash script, which was removed once a real host ran the Rust version. Tag `v0.1.2` is the last that
+has it, frozen from `ai-harness` commit `2be0a66`. Its comments record the failure behind most of the shapes above, so
+read them before removing something that looks unnecessary:
+
+```bash
+git show v0.1.2:reference/bash/worktree.sh
+```
+
+These defects were fixed, each in its own commit with a regression test:
+
+| Behaviour                         | Bash                                                            | Rust                                          |
+| --------------------------------- | --------------------------------------------------------------- | --------------------------------------------- |
+| `create` on a path already in use | Exit 0, printing it, whichever branch is there                  | Exit 1, naming both branches                  |
+| `remove` on an unmerged branch    | Removes the worktree, then exit 1                               | Exit 1 first, with nothing changed            |
+| `remove` and other registrations  | Prunes the repository, deleting other entries' clones unchecked | Removes only its own                          |
+| `remove` and a silent remote      | Reads it as having no such branch, then deletes locally         | Reads it before deleting anything, and exit 3 |
+| `provision`, any failing step     | A failed `direnv allow` exits non-zero and fails workmux's hook | Warns and exits 0                             |
+
+And these differences were chosen on purpose:
+
+| Behaviour                    | Bash                                                 | Rust                                                          | Why                                          |
+| ---------------------------- | ---------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------- |
+| `--help`                     | Exit 2, usage on stderr                              | Exit 0, help on stdout                                        | `clap`, and the normal convention            |
+| Unknown option, any command  | Exit 2 or 1, by command, with a hand-written message | Exit 2, `clap`'s message                                      | `clap`; exit 2 means usage anyway            |
+| A branch starting with `-`   | Refused by hand                                      | Rejected by `clap` as an option                               | Same result                                  |
+| Placement                    | `<root>/<repo>/<slug>`, from a configured root       | `<parent>/<repo>.worktrees/<slug>`, with nothing to configure | See below                                    |
+| `status`, `sweep` default    | The configured root, across repositories             | The current repository; refused outside one                   | There is no root any more                    |
+| `sweep --repo`, no directory | The configured root                                  | Beside each repository named, from anywhere                   | There is no root any more                    |
+| Where `create` can run       | Any repository                                       | Refused unless the git directory is named `.git`              | Elsewhere the path is wrong or inside `.git` |
+| Paths with spaces            | Split by `awk`, so misread                           | Read with `-z` and split at the tab                           | The limit was never intended                 |
+| A probe's stderr             | Mixed into some parsed output                        | Never part of what is parsed                                  | Parsing a warning is a wrong answer          |
+| A failed `git worktree add`  | Git's own status, such as 128                        | Exit 1                                                        | The exit contract has no 128                 |
+| Unreadable directory entry   | A short list                                         | Exit 3                                                        | A short list is what this tool prevents      |
