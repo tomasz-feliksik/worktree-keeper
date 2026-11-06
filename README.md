@@ -12,10 +12,16 @@ looks first.
 ```bash
 worktree create feat/x            # add ../<repo>.worktrees/feat-x, set it up, print its path
 worktree status                   # every worktree of this repository, and whether it could go
-worktree check <path>             # may it be removed, and if not, why? Changes nothing
+worktree check <path>             # is its content safe to lose, and if not, why? Changes nothing
 worktree remove <path>            # check, then remove the worktree and its merged branch
 worktree sweep                    # list leftovers; deletes only with --apply
 ```
+
+`check` judges what the worktree holds, as the removal hook does. Only `status` and `remove` also judge its branch, so
+`check` can pass where `remove` refuses an unmerged branch.
+
+**Gitignored files count as disposable.** They go with the worktree, without a warning, so build output never blocks a
+removal. Keep anything you cannot regenerate outside them.
 
 `worktree --help` lists the rest. `status` and `check` take `--json`, for agents to act on a verdict instead of parsing
 Git's output.
@@ -27,8 +33,9 @@ Git's output.
 | 2    | Usage                                  |
 | 3    | Could not check. This never means safe |
 
-`--force` accepts losing the worktree's own uncommitted changes and nothing else: an unpushed commit in a submodule is
-still refused. `--ignore-in-use` removes while processes are running there, and names each one it left.
+`--force` accepts losing the worktree's own uncommitted changes, its unmerged branch and any commits on its detached
+HEAD. An unpushed commit in a submodule is still refused. `--ignore-in-use` removes while processes are running there,
+and names each one it left.
 
 ## Install
 

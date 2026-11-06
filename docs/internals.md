@@ -105,6 +105,20 @@ which is the only one left once main has retired the submodule. If no clone can 
   dropped the checkout by then anyway, so a mutant that skips the detach survives: see
   [mutation testing](#mutation-testing). If `git worktree remove` itself fails, the worktree is left detached.
 - A remote branch is deleted last. Deleting it first and then failing locally leaves a branch with no upstream.
+- A commit on a detached HEAD is held by that HEAD and its reflog, which live in the worktree's admin directory and go
+  with it, and `gc` then destroys the commit. The check reads that directory rather than the worktree, so it also works
+  for a stale registration whose worktree has gone. It cannot use `--all`, which counts HEAD itself.
+
+### What can hide work from a check
+
+- `status.showUntrackedFiles=no` hides untracked files from `git status`, so the check pins `--untracked-files=normal`.
+- `git status` does not look at a file flagged skip-worktree or assume-unchanged. The check compares them through a
+  throwaway copy of the index with the flags cleared. Each flag takes its own `update-index` run: given both, it applies
+  only the first it handles (measured on 2.56). A flagged file absent from disk is normal under a sparse checkout.
+- `GIT_DIR` and `GIT_WORK_TREE` outrank `-C`. `pre-commit`, `post-commit` and `post-checkout` export `GIT_DIR`, and
+  `git worktree add` exports both to its hooks (measured on 2.56). With `GIT_DIR` alone, git takes the current directory
+  as the work tree, which looks right, but reports the other worktree's git directory, and so its clones. So `Git::new`
+  clears what ties git to one repository.
 
 ### direnv
 
@@ -142,8 +156,8 @@ for in-use detection.
 - **"Could not check" is its own type.** `probe()` exits 3 on any failure, so it cannot be mapped to success or to an
   empty result by accident. A list that comes back short because a probe failed is the exact failure this tool exists to
   prevent.
-- **`git` inherits the caller's environment**, for configuration. Set `GIT_INDEX_FILE` only on the one command that
-  needs it.
+- **`git` inherits the caller's environment**, for configuration, but not what ties it to one repository. Set
+  `GIT_INDEX_FILE` only on the one command that needs it.
 - **Paths are bytes.** Use `OsStr` and `Path`, not `String`, for anything from Git or the filesystem. Git quotes unusual
   paths in `ls-files` output by default, so prefer `-z`.
 - **`std::process::Command` output is not text.** Decode only what needs decoding, and print paths lossily only for
@@ -176,70 +190,80 @@ Each row is a deliberate break that has to turn the named test red. A new guaran
 one on 2026-11-05, when the suite was still shell. It has kept their names, and full mutation runs have been read since.
 `cargo-mutants` covers what these rows do not.
 
-| Guarantee broken by the mutant                                 | Test that must fail                             |
-| -------------------------------------------------------------- | ----------------------------------------------- |
-| Reading a clone without `--work-tree=/`                        | `nested_stale_core_worktree`                    |
-| Unpushed check that sees nothing                               | `unpushed_populated_submodule`                  |
-| Unpushed check limited to `--branches`                         | `unpushed_detached_submodule`                   |
-| Deinitialised clones not inspected                             | `unpushed_leftover_gitdir`                      |
-| Worktree's dirty state ignored                                 | `dirty_worktree`                                |
-| Submodule's dirty state ignored                                | `dirty_submodule_refused_under_force`           |
-| `--help` taken as a branch or path                             | `help_never_acts`                               |
-| A failed probe swallowed instead of exit 3                     | `probe_failure_is_loud`                         |
-| The main checkout accepted as a worktree                       | `main_worktree_refused`                         |
-| "Top-level" read as "no slash in the path"                     | `top_level_submodule_in_subdirectory`           |
-| `submodule deinit` used to empty a submodule                   | `remove_keeps_main_submodule_config`            |
-| Stranded submodule emptied without comparing it                | `stranded_modified_refused`                     |
-| The same, for a submodule main has retired                     | `stranded_retired_modified_refused`             |
-| Only the main checkout's clone consulted                       | `stranded_retired_submodule_recovered`          |
-| Advising a main checkout that no longer declares the submodule | `stranded_retired_no_clone`                     |
-| `ls-tree -r` without `--full-tree`                             | `stranded_modified_refused`                     |
-| Guard leaves `<gitdir>/modules` in place                       | `guard_never_removes`                           |
-| Actor prints nothing                                           | `actor`                                         |
-| Sweep deletes without `--apply`                                | `sweep`                                         |
-| Orphans classified as leftovers                                | `sweep`                                         |
-| Live worktrees classified as leftovers                         | `sweep_flat_layout`                             |
-| Sweep looks beside the caller's repository, not the one named  | `sweep_repo_names_where_to_look`                |
-| Prune ignores unpushed commits                                 | `sweep_stale_registration`                      |
-| Registration's `gitdir` read from the current directory        | `sweep_relative_paths`                          |
-| A worktree's `.git` pointer read from the current directory    | `sweep_relative_paths`                          |
-| An admin directory's back-pointer read raw                     | `sweep_relative_paths`                          |
-| direnv trust given when the main checkout is not allowed       | `direnv_gate`                                   |
-| direnv trust given when the content differs                    | `direnv_gate`                                   |
-| Provision skips submodules                                     | `create_places_and_provisions`                  |
-| Unpushed submodule commits accepted under `--force`            | `unpushed_refused_under_force`                  |
-| Remote branch deleted without `--delete-remote`                | `remote_branch_deleted_last`                    |
-| Remote branch deleted before the local one                     | `remote_branch_deleted_last`                    |
-| A silent remote read as having no branch                       | `unreachable_remote_is_could_not_tell`          |
-| Sweep prunes a locked registration                             | `sweep_leaves_locked_registrations`             |
-| `remove` prunes the whole repository                           | `remove_keeps_other_stale_registrations`        |
-| `create` hands back an existing path unchecked                 | `create_refuses_a_slug_collision`               |
-| Unmerged branch found only after removal                       | `unmerged_refusal_changes_nothing`              |
-| Unmerged check ignores the upstream                            | `unmerged_refusal_changes_nothing`              |
-| A failed `direnv allow` fails provision                        | `provision_never_fails_its_caller`              |
-| `check` takes optional locks, so it writes the index           | `check_changes_nothing`                         |
-| `check` clears what `guard` clears                             | `check_changes_nothing`                         |
-| A process inside the worktree goes unnoticed                   | `in_use_refuses_and_names_the_process`          |
-| `--force` overrides the in-use check                           | `in_use_refuses_and_names_the_process`          |
-| The caller's own chain counts as a holder                      | `in_use_refuses_and_names_the_process`          |
-| `--ignore-in-use` ignored                                      | `in_use_refuses_and_names_the_process`          |
-| `guard` takes its default path from the environment            | `guard_defaults_to_the_current_directory`       |
-| `--ignore-in-use` hides what it left running                   | `ignore_in_use_names_what_it_left_running`      |
-| `--ignore-in-use` lets uncommitted changes through             | `ignore_in_use_names_what_it_left_running`      |
-| A lock does not stop removal                                   | `lock_refuses_until_unlocked`                   |
-| A lock is passed under `--force`                               | `lock_refuses_until_unlocked`                   |
-| An orphan listed as safe                                       | `status_lists_every_worktree`                   |
-| `status` exits 0 with unknown rows                             | `status_lists_every_worktree`                   |
-| A seed file's mode widened                                     | `seed_copies_only_what_is_declared_and_ignored` |
-| A selected file copied though git does not ignore it           | `seed_copies_only_what_is_declared_and_ignored` |
-| Every ignored file copied, chosen or not                       | `seed_copies_only_what_is_declared_and_ignored` |
-| Seeding overwrites                                             | `seed_never_overwrites`                         |
-| The list read from the worktree                                | `seed_ignores_a_list_the_branch_changed`        |
-| Writing through a symlinked parent                             | `seed_does_not_write_through_a_symlink`         |
-| A symlink source copied                                        | `seed_skips_a_symlink_source`                   |
-| A failed copy fails the step and the rest                      | `seed_failure_warns_and_exits_zero`             |
-| A failed copy leaves a partial file                            | `seed_failure_warns_and_exits_zero`             |
-| The seed step's failure fails provision                        | `seed_failure_warns_and_exits_zero`             |
+| Guarantee broken by the mutant                                 | Test that must fail                                                |
+| -------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Reading a clone without `--work-tree=/`                        | `nested_stale_core_worktree`                                       |
+| Unpushed check that sees nothing                               | `unpushed_populated_submodule`                                     |
+| Unpushed check limited to `--branches`                         | `unpushed_detached_submodule`                                      |
+| Deinitialised clones not inspected                             | `unpushed_leftover_gitdir`                                         |
+| Worktree's dirty state ignored                                 | `dirty_worktree`                                                   |
+| Submodule's dirty state ignored                                | `dirty_submodule_refused_under_force`                              |
+| `--help` taken as a branch or path                             | `help_never_acts`                                                  |
+| A failed probe swallowed instead of exit 3                     | `probe_failure_is_loud`                                            |
+| The main checkout accepted as a worktree                       | `main_worktree_refused`                                            |
+| "Top-level" read as "no slash in the path"                     | `top_level_submodule_in_subdirectory`                              |
+| `submodule deinit` used to empty a submodule                   | `remove_keeps_main_submodule_config`                               |
+| Stranded submodule emptied without comparing it                | `stranded_modified_refused`                                        |
+| The same, for a submodule main has retired                     | `stranded_retired_modified_refused`                                |
+| Only the main checkout's clone consulted                       | `stranded_retired_submodule_recovered`                             |
+| Advising a main checkout that no longer declares the submodule | `stranded_retired_no_clone`                                        |
+| `ls-tree -r` without `--full-tree`                             | `stranded_modified_refused`                                        |
+| Guard leaves `<gitdir>/modules` in place                       | `guard_never_removes`                                              |
+| `GIT_DIR` and `GIT_WORK_TREE` left in git's environment        | `leaked_git_dir_and_work_tree_cannot_redirect_to_another_worktree` |
+| `GIT_DIR` alone left in git's environment                      | `leaked_git_dir_alone_judges_the_clones_of_the_worktree_named`     |
+| `--untracked-files` not pinned                                 | `a_config_hiding_untracked_files_hides_nothing_from_the_check`     |
+| A detached HEAD's own commits not refused                      | `a_commit_on_a_detached_head_is_refused_until_something_holds_it`  |
+| The detached query counts HEAD itself, with `--all`            | `a_commit_on_a_detached_head_is_refused_until_something_holds_it`  |
+| The detached query ignores tags or remotes                     | `a_detached_commit_a_tag_or_remote_holds_is_removable`             |
+| Flagged edits not compared, or only one flag cleared           | `an_edit_git_status_cannot_see_is_refused`                         |
+| The real index written while comparing                         | `an_edit_git_status_cannot_see_is_refused`                         |
+| A flagged file absent from disk counted as edited              | `a_flagged_file_absent_from_disk_holds_no_work`                    |
+| Sweep prunes a registration only its HEAD holds commits for    | `sweep_keeps_a_stale_registration_only_its_head_holds_commits_for` |
+| Actor prints nothing                                           | `actor`                                                            |
+| Sweep deletes without `--apply`                                | `sweep`                                                            |
+| Orphans classified as leftovers                                | `sweep`                                                            |
+| Live worktrees classified as leftovers                         | `sweep_flat_layout`                                                |
+| Sweep looks beside the caller's repository, not the one named  | `sweep_repo_names_where_to_look`                                   |
+| Prune ignores unpushed commits                                 | `sweep_stale_registration`                                         |
+| Registration's `gitdir` read from the current directory        | `sweep_relative_paths`                                             |
+| A worktree's `.git` pointer read from the current directory    | `sweep_relative_paths`                                             |
+| An admin directory's back-pointer read raw                     | `sweep_relative_paths`                                             |
+| direnv trust given when the main checkout is not allowed       | `direnv_gate`                                                      |
+| direnv trust given when the content differs                    | `direnv_gate`                                                      |
+| Provision skips submodules                                     | `create_places_and_provisions`                                     |
+| Unpushed submodule commits accepted under `--force`            | `unpushed_refused_under_force`                                     |
+| Remote branch deleted without `--delete-remote`                | `remote_branch_deleted_last`                                       |
+| Remote branch deleted before the local one                     | `remote_branch_deleted_last`                                       |
+| A silent remote read as having no branch                       | `unreachable_remote_is_could_not_tell`                             |
+| Sweep prunes a locked registration                             | `sweep_leaves_locked_registrations`                                |
+| `remove` prunes the whole repository                           | `remove_keeps_other_stale_registrations`                           |
+| `create` hands back an existing path unchecked                 | `create_refuses_a_slug_collision`                                  |
+| Unmerged branch found only after removal                       | `unmerged_refusal_changes_nothing`                                 |
+| Unmerged check ignores the upstream                            | `unmerged_refusal_changes_nothing`                                 |
+| A failed `direnv allow` fails provision                        | `provision_never_fails_its_caller`                                 |
+| `check` takes optional locks, so it writes the index           | `check_changes_nothing`                                            |
+| `check` clears what `guard` clears                             | `check_changes_nothing`                                            |
+| A process inside the worktree goes unnoticed                   | `in_use_refuses_and_names_the_process`                             |
+| `--force` overrides the in-use check                           | `in_use_refuses_and_names_the_process`                             |
+| The caller's own chain counts as a holder                      | `in_use_refuses_and_names_the_process`                             |
+| `--ignore-in-use` ignored                                      | `in_use_refuses_and_names_the_process`                             |
+| `guard` takes its default path from the environment            | `guard_defaults_to_the_current_directory`                          |
+| `--ignore-in-use` hides what it left running                   | `ignore_in_use_names_what_it_left_running`                         |
+| `--ignore-in-use` lets uncommitted changes through             | `ignore_in_use_names_what_it_left_running`                         |
+| A lock does not stop removal                                   | `lock_refuses_until_unlocked`                                      |
+| A lock is passed under `--force`                               | `lock_refuses_until_unlocked`                                      |
+| An orphan listed as safe                                       | `status_lists_every_worktree`                                      |
+| `status` exits 0 with unknown rows                             | `status_lists_every_worktree`                                      |
+| A seed file's mode widened                                     | `seed_copies_only_what_is_declared_and_ignored`                    |
+| A selected file copied though git does not ignore it           | `seed_copies_only_what_is_declared_and_ignored`                    |
+| Every ignored file copied, chosen or not                       | `seed_copies_only_what_is_declared_and_ignored`                    |
+| Seeding overwrites                                             | `seed_never_overwrites`                                            |
+| The list read from the worktree                                | `seed_ignores_a_list_the_branch_changed`                           |
+| Writing through a symlinked parent                             | `seed_does_not_write_through_a_symlink`                            |
+| A symlink source copied                                        | `seed_skips_a_symlink_source`                                      |
+| A failed copy fails the step and the rest                      | `seed_failure_warns_and_exits_zero`                                |
+| A failed copy leaves a partial file                            | `seed_failure_warns_and_exits_zero`                                |
+| The seed step's failure fails provision                        | `seed_failure_warns_and_exits_zero`                                |
 
 ### Mutation testing
 

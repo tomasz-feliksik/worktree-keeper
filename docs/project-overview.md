@@ -84,7 +84,7 @@ removal is safe without the side effects of `guard`.
 ```text
 # Questions: never change anything
 worktree status [--json] [path]     every worktree and its state
-worktree check [--json] [--force] [--ignore-in-use] <path>      may it be removed, and if not, why?
+worktree check [--json] [--force] [--ignore-in-use] <path>      is its content safe to lose, and if not, why?
 worktree actor [dir]
 
 # Lifecycle
@@ -105,8 +105,8 @@ worktree guard [--force] [--ignore-in-use] [path]     check, then clear metadata
 
 ### Guarantees
 
-1. **`--force` covers only the worktree's own uncommitted changes.** Submodule changes and unpushed submodule commits
-   are refused regardless.
+1. **`--force` covers only what the worktree itself holds:** its uncommitted changes, its unmerged branch and commits on
+   its detached HEAD. Submodule changes and unpushed submodule commits are refused regardless.
 1. **"Cannot tell" is never "safe".** A check that could not run exits 3 and names the path.
 1. **The guard never removes the worktree.**
 1. **Orphans are reported, never swept.** A `.git` file whose git directory is gone may sit beside work nothing else
@@ -118,6 +118,13 @@ worktree guard [--force] [--ignore-in-use] [path]     check, then clear metadata
    main checkout's submodules.
 1. **A remote branch is deleted last, and only on request.**
 1. **`--help` and a mistyped option never act.** Nothing is created, and no branch is made.
+1. **A commit only a detached HEAD holds is work.** `remove` refuses it without `--force`, and `sweep` never prunes a
+   stale registration over it.
+1. **Git's defaults and the caller's environment decide nothing.** `status.showUntrackedFiles`, a skip-worktree or
+   assume-unchanged flag, and a `GIT_DIR` leaked from a hook cannot change a verdict or the worktree it is about.
+1. **Gitignored files are disposable, and this is the one exception to refusing what cannot be proven disposable.** They
+   go with the worktree, without a warning. Refusing would block nearly every worktree that has build output or seeded
+   files. A file a user excludes through `core.excludesFile` counts as gitignored.
 
 ## Technical decisions
 
