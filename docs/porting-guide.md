@@ -8,7 +8,7 @@ What the Rust tool kept from the Bash tool it replaced, and what it must keep do
 | File                                         | What it is                                                                                                |
 | -------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `git show v0.1.2:reference/bash/worktree.sh` | The Bash tool as it was deleted, frozen from `ai-harness` commit `2be0a66`. **Its comments are the spec** |
-| `tests/parity/test.sh`                       | The black-box tests. They run against any build                                                           |
+| `tests/black_box/`                           | The black-box tests, through the real binary                                                              |
 | This document                                | What neither file says: callers, Git facts, the guarantee table and how to cut over                       |
 
 Read the comments on a function before changing what it became. Most of them record a failure that was measured on a
@@ -18,24 +18,26 @@ The first 27 tests came from `ai-harness`, and passed against the Bash build on 
 the defects it fixed and the commands it added. The two `bd` wrapper tests stayed in `ai-harness`, because the wrapper
 does.
 
-## Running the parity suite
+## Running the black-box suite
 
 ```bash
-nix develop --command just parity                     # everything
-nix develop --command just parity sweep actor         # by name, without the t_ prefix
+nix develop --command just black-box                  # everything
+nix develop --command just black-box sweep actor      # tests whose names contain either word
 ```
 
-It builds the debug binary, then runs the suite against it. It uses scratch repositories with local bare remotes, so it
-works offline. `just check` runs it, and CI has its own step for it.
+It builds the debug binary, then runs the suite against it, and reports how many tests ran. A word that matches no test
+fails rather than passing with none. It uses scratch repositories with local bare remotes, so it works offline.
+`cargo test`, and so `just check`, runs it too.
 
-`nix flake check` also runs it as `checks.<system>.parity`, in the Nix sandbox, against the wrapped package instead of
-the debug binary. That is the only place the package itself gets tested. It then runs `provision` with nothing on
-`PATH`, to prove the wrapper supplies `git` and `direnv`. Because the wrapper comes first on `PATH`, a test cannot fake
-either program there: make the real one fail instead, as `t_provision_never_fails_its_caller` does.
+`nix flake check` also runs it as `checks.<system>.black-box`, in the Nix sandbox, against the wrapped package instead
+of the debug binary, by setting `WORKTREE_UNDER_TEST`. That is the only place the package itself gets tested.
+`checks.<system>.wrapper` then runs `provision` with nothing on `PATH`, to prove the wrapper supplies `git` and
+`direnv`. Because the wrapper comes first on `PATH`, a test cannot fake either program there: make the real one fail
+instead, as `provision_never_fails_its_caller` does.
 
 Mutation testing stays out of the sandbox: it needs hundreds of incremental builds, and its survivors are read rather
-than gated on. It runs broken builds of a tool that deletes things as your own user, so `tests/parity/test.sh` keeps
-every path inside its scratch directory.
+than gated on. It runs broken builds of a tool that deletes things as your own user, so `tests/black_box/` keeps every
+path inside its scratch directory.
 
 ## Intended differences from Bash
 
@@ -80,13 +82,13 @@ These contracts live in `ai-harness`, not here, and nothing in this repository w
 | herdr remove wrapper  | `worktree guard "$path"`, or `worktree remove "$path"` | Exit status                                                                                                                                                                              |
 | The `bd` wrapper      | `worktree actor "$dir"`, with stderr discarded         | Prints the name or nothing, and stays quiet outside Git. It must not fail on a bad directory                                                                                             |
 
-**`provision` and failure.** Every step warns and exits 0, and `t_provision_never_fails_its_caller` holds that. The one
+**`provision` and failure.** Every step warns and exits 0, and `provision_never_fails_its_caller` holds that. The one
 refusal is a path that is not a directory: no real hook passes one, there is no worktree to half-create, and exit 0
 would hide a caller's typo.
 
 **`WM_WORKTREE_PATH`.** `guard`'s default path is `$WM_WORKTREE_PATH`, then the current directory. That is the tool's
-one piece of knowledge about a specific caller. Keep it for parity, because `t_guard_reads_workmux_env` tests it.
-workmux also runs the hook inside the worktree, so it can probably be dropped at cutover. Confirm that first.
+one piece of knowledge about a specific caller. Keep it for parity, because `guard_reads_workmux_env` tests it. workmux
+also runs the hook inside the worktree, so it can probably be dropped at cutover. Confirm that first.
 
 **Placement.** `src/placement.rs` holds the one rule, and every command asks it. `WORKTREE_ROOT` and
 `worktreeKeeper.root` are gone. Worktrees that already live elsewhere keep working: `guard` and `remove` take a path,
@@ -291,7 +293,7 @@ Run mutation testing with `nix develop --command just mutants`.
 
 ## Testing a port
 
-For each command: read the Bash and its comments, write or enable the parity tests, port it, then break each of its
+For each command: read the Bash and its comments, write or enable the black-box tests, port it, then break each of its
 guarantees in the Rust and watch the matching test fail. "It passes" is not the claim; "it passes, and it fails like
 this when I break it" is.
 

@@ -157,7 +157,7 @@ The port first matched Bash, then fixed each of these as its own commit with a r
 
 ### Testing
 
-- **Black box:** `tests/parity/test.sh` began as the Bash tool's own suite and drives the binary from outside. Every
+- **Black box:** `tests/black_box/` began as the Bash tool's own suite and drives the binary from outside. Every
   intended difference from Bash is written down.
 - **Real Git:** tests run real `git` in throwaway repositories, because the bugs that matter come from Git's actual
   on-disk behaviour.
