@@ -1,7 +1,7 @@
 //! States where a removal could lose work, or lose the wrong work: what git's defaults and
 //! the caller's environment hide from a check.
 
-use crate::support::{Ran, Sandbox, exists, ran, write};
+use crate::support::{Ran, Sandbox, append, exists, ran, rm, write};
 
 /// The tool with these variables in its environment, as a git hook would run it.
 fn run_with(s: &Sandbox, env: &[(&str, &str)], args: &[&str]) -> Ran {
@@ -65,4 +65,29 @@ fn leaked_git_dir_alone_judges_the_clones_of_the_worktree_named() {
         exists(b.git_file("modules/sub")),
         "the only copy of a commit was cleared"
     );
+}
+
+// `status.showUntrackedFiles = no` is an ordinary setting in a large repository. It changes
+// what `git status` shows, and must not change what counts as safe to delete.
+#[test]
+fn a_config_hiding_untracked_files_hides_nothing_from_the_check() {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("hidden");
+    append(
+        format!("{}/gitconfig", s.root),
+        "[status]\n\tshowUntrackedFiles = no\n",
+    );
+
+    write(wt.file("work"), "only copy\n");
+    let remove = s.run(&["remove", &wt.path]);
+    remove.rc(1);
+    remove.err_has("uncommitted changes");
+    assert!(exists(wt.file("work")), "a refusal deleted the file");
+    rm(wt.file("work"));
+
+    write(wt.file("sub/work"), "only copy\n");
+    let guard = s.run(&["guard", "--force", &wt.path]);
+    guard.rc(1);
+    guard.err_has("submodule sub");
+    assert!(exists(wt.file("sub/work")), "a refusal deleted the file");
 }

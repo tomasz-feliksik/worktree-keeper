@@ -300,6 +300,9 @@ pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome {
 
 /// `--no-optional-locks`: a plain `git status` refreshes the index when it can, and a
 /// question must not write. `check` and `status` are built on this.
+///
+/// `--untracked-files`, because `status.showUntrackedFiles` would otherwise decide what
+/// counts as safe to delete.
 pub fn status(dir: &Path) -> Result<Vec<u8>, CannotTell> {
     Git::at(
         dir,
@@ -307,6 +310,7 @@ pub fn status(dir: &Path) -> Result<Vec<u8>, CannotTell> {
             "--no-optional-locks",
             "status",
             "--porcelain",
+            "--untracked-files=normal",
             "--ignore-submodules=all",
         ],
     )
