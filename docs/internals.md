@@ -262,8 +262,6 @@ A full run takes about six minutes. Every survivor is killed or explained here. 
   about two minutes.
 - `remove.rs`, the detach's `!` deleted: the detach is redundant today, because `git worktree remove` has dropped the
   checkout before `git branch -d` runs. It stays as a guard against that order changing.
-- `provision.rs`, `same_bytes` as always true: survives some full runs and is caught on its own. Tracked as
-  `worktree-keeper-elj.4`.
 
 ## What consumers need
 

@@ -282,6 +282,8 @@ fn direnv(s: &Sandbox, dir: &str, verb: &str) {
     );
 }
 
+// Strict because most of direnv_gate's checks expect "not allowed". A status that failed, or
+// that found no .envrc, must not read as that answer.
 fn direnv_allowed(s: &Sandbox, dir: &str) -> bool {
     let output = s
         .command("direnv")
@@ -289,7 +291,18 @@ fn direnv_allowed(s: &Sandbox, dir: &str) -> bool {
         .current_dir(dir)
         .output()
         .expect("direnv should start: without it the test environment is incomplete");
-    String::from_utf8_lossy(&output.stdout)
+    let status = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "direnv status in {dir} failed: {status}"
+    );
+    assert!(
+        status
+            .lines()
+            .any(|line| line.starts_with("Found RC path ")),
+        "direnv status in {dir} found no .envrc: {status}"
+    );
+    status
         .lines()
         .any(|line| line == "Found RC allowed 0" || line == "Found RC allowed true")
 }
@@ -330,7 +343,11 @@ fn direnv_gate() {
     s.git(&repo, &["commit", "-q", "-am", "different envrc"]);
     s.git(&repo, &["switch", "-q", "-"]);
     s.git(&repo, &["worktree", "add", "-q", &wt("c"), "other-envrc"]);
-    s.run(&["provision", &wt("c")]);
+    // The message proves this gate is what refused: anything else stopping the allow, such
+    // as a failed `direnv status` in the tool, would leave the worktree untrusted too.
+    let different = s.run(&["provision", &wt("c")]);
+    different.rc(0);
+    different.out_has("differs from the allowed root copy");
     assert!(
         !direnv_allowed(&s, &wt("c")),
         "worktree trusted although its .envrc differs from the allowed root copy"
