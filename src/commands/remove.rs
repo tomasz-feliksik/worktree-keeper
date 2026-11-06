@@ -5,8 +5,9 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use crate::commands::guard::{self, OwnChanges, Rules};
+use crate::commands::guard::{self, OwnChanges, Rules, RunningProcesses};
 use crate::git::{Git, shown, trimmed};
+use crate::in_use;
 use crate::outcome::{CannotTell, Outcome, RefusalKind, Stop};
 use crate::placement;
 use crate::say::{Sink, say};
@@ -46,6 +47,9 @@ pub fn run(path: &Path, rules: Rules, fate: BranchFate) -> Outcome {
                 wt.display()
             ),
         );
+    }
+    if rules.running == RunningProcesses::Ignore {
+        report_left_running(wt);
     }
     // Detached first, so that `git branch -d` can delete the branch afterwards.
     if !branch.is_empty() {
@@ -93,6 +97,23 @@ pub fn run(path: &Path, rules: Rules, fate: BranchFate) -> Outcome {
         delete_remote_branch(main, &remote, &branch)?;
     }
     Ok(())
+}
+
+/// The record of what `--ignore-in-use` skipped, read now because a process stops
+/// matching once its directory is gone. Only a report: the caller has already accepted
+/// these processes, so failing to list them does not stop the removal.
+fn report_left_running(wt: &Path) {
+    match in_use::holders(wt) {
+        Ok(holders) => {
+            for holder in holders {
+                say(Sink::Stdout, format_args!("still running: {holder}"));
+            }
+        }
+        Err(_) => say(
+            Sink::Stderr,
+            format_args!("could not tell what is still running in {}", wt.display()),
+        ),
+    }
 }
 
 /// Whether a worktree's branch is merged, by git's own rule.

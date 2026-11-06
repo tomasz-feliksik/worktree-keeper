@@ -99,16 +99,21 @@ and `status` lists what git has registered, wherever it is.
 
 ## In-use detection
 
-Measured on 2026-11-05, against workmux 0.1.278 and tmux 3.8, and by reading the herdr wrapper. herdr itself was not
-run.
+Measured on 2026-11-05 against workmux 0.1.278 and tmux 3.8, and on 2026-11-06 against herdr 0.9.5, on an isolated
+server through a real client's key bindings.
 
 - **The check runs while panes are open in some callers.** `workmux remove` from outside the window closes the panes
   first, so the hook sees nothing. From inside the window the panes stay open during `pre_remove`, so an agent in a
-  sibling pane is reported. The herdr wrapper guards before herdr is asked to close anything, so its panes are always
-  reported.
+  sibling pane is reported. A herdr popup binding is a child of the server rather than of the pane, so even the pane's
+  own shell is reported, and a plain `guard` or `remove` from a key always refuses.
+- **Popups differ from panes in two more ways.** A popup sets `HERDR_ACTIVE_WORKSPACE_ID`, not `HERDR_WORKSPACE_ID`, and
+  it closes when its command exits, so a refusal disappears unless the command waits.
 - **So cutover has a decision to make.** The refusal is correct when nothing owns those processes. A caller that closes
   its own panes passes `--ignore-in-use`, which leaves every other check in force. `--force` does not override it, on
   purpose: it accepts losing changes already made, not pulling a directory from under a working process.
+- **The override leaves a record.** `remove --ignore-in-use` asks nothing and prints `still running: <name> (pid <pid>)`
+  for each process it found. It removes the directory only, so those processes keep running until their owner closes
+  them.
 - **Only the caller's own chain is exempt:** its process and ancestors. A sibling shares an ancestor with the caller,
   and is exactly what this looks for, so excluding a process group or a whole subtree would defeat it.
 - **An unreadable `/proc` entry does not count.** It is normally another user's process: 543 of 1334 on the machine
@@ -270,6 +275,8 @@ named test went red with its own failure message rather than a crash. `cargo-mut
 | `--force` overrides the in-use check                           | `in_use_refuses_and_names_the_process`          |
 | The caller's own chain counts as a holder                      | `in_use_refuses_and_names_the_process`          |
 | `--ignore-in-use` ignored                                      | `in_use_refuses_and_names_the_process`          |
+| `--ignore-in-use` hides what it left running                   | `ignore_in_use_names_what_it_left_running`      |
+| `--ignore-in-use` lets uncommitted changes through             | `ignore_in_use_names_what_it_left_running`      |
 | A lock does not stop removal                                   | `lock_refuses_until_unlocked`                   |
 | A lock is passed under `--force`                               | `lock_refuses_until_unlocked`                   |
 | An orphan listed as safe                                       | `status_lists_every_worktree`                   |
