@@ -6,7 +6,8 @@
 //! be lost; a probe that cannot answer is "unknown", and unknown refuses.
 //!
 //! git inherits the caller's environment on purpose, so that it sees the same
-//! configuration as the user's shell.
+//! configuration as the user's shell, except for what ties it to one repository: see
+//! [`REPOSITORY_LOCATION`].
 
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -16,6 +17,23 @@ use std::process::{Command, Output};
 
 use crate::outcome::CannotTell;
 use crate::say::Sink;
+
+/// What ties git to one repository, from `git rev-parse --local-env-vars` without the
+/// configuration entries. Git hooks export some of these, and they outrank `-C`, so left in
+/// place a question about one worktree is answered about another, and `remove` deletes it.
+/// The tool always says where it means.
+const REPOSITORY_LOCATION: [&str; 10] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_PREFIX",
+];
 
 /// One `git` command, built up and then run in exactly one of the ways below.
 #[must_use]
@@ -31,6 +49,9 @@ impl Git {
         S: AsRef<OsStr>,
     {
         let mut command = Command::new("git");
+        for name in REPOSITORY_LOCATION {
+            command.env_remove(name);
+        }
         let mut shown = String::from("git");
         for arg in args {
             let arg = arg.as_ref();
@@ -70,8 +91,7 @@ impl Git {
         Self::new(full)
     }
 
-    /// Reads and writes this index instead of the repository's. The only
-    /// environment change this tool makes, on the one command that needs it.
+    /// Reads and writes this index instead of the repository's.
     pub fn index_file(mut self, index: &Path) -> Self {
         self.command.env("GIT_INDEX_FILE", index);
         self
