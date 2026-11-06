@@ -10,8 +10,8 @@ that wraps the worktree lifecycle and refuses to delete anything it cannot prove
 | Binary     | `worktree`                                          |
 | Status     | In production through `ai-harness`                  |
 
-This document records what the project is and what has been agreed. How to create the repository and its Nix structure
-is in [`setup.md`](./setup.md). How to do the port is in [`porting-guide.md`](./porting-guide.md).
+This document records what the project is and the decisions behind it. How to work on the repository is in
+[`setup.md`](./setup.md), and what the code cannot tell you is in [`internals.md`](./internals.md).
 
 ## Why it exists
 
@@ -46,30 +46,25 @@ that stops being true.
 The product is one promise: **know what is safe, and never lose work.** It sits underneath the tools that launch and
 supervise agents (workmux and herdr today), rather than competing with them.
 
-### Features carried over from the Bash tool
+### Features
 
-| Feature                | What it does                                                                      | Command     |
-| ---------------------- | --------------------------------------------------------------------------------- | ----------- |
-| Placement              | Puts every worktree at `<parent>/<repo>.worktrees/<slug>`                         | `create`    |
-| Branch setup           | Uses an existing branch, or creates one from a base                               | `create`    |
-| Submodule provisioning | Initialises submodules; if that fails, warns without failing the caller           | `provision` |
-| Trust inheritance      | Applies the `.envrc` rule above                                                   | `provision` |
-| Actor identity         | Gives each worktree its own identity, for trackers and similar tools              | `actor`     |
-| Removal guard          | Runs the checks, then clears stale submodule metadata                             | `guard`     |
-| Guarded removal        | Removes the worktree, deletes a merged branch, and optionally the remote one      | `remove`    |
-| Leftover sweep         | Classifies folders as live, orphan, repo or leftover; deletes only with `--apply` | `sweep`     |
-| Exit contract          | 0 done, 1 refused, 2 usage, 3 could not check                                     | all         |
-
-### New features in scope
-
-| Feature            | What it does                                                                            | Why                                                                                      |
-| ------------------ | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Status view        | Shows branch, dirty, unpushed, merged and in-use state for each worktree, with `--json` | There is no list today, and "which of these are safe to remove?" is the common complaint |
-| Read-only check    | Answers "may this be removed?" and changes nothing                                      | `guard` also empties submodules, so nothing can answer this without side effects         |
-| In-use detection   | Refuses removal while a process is running in the worktree                              | Protects a running agent                                                                 |
-| Create safety      | Checks that an existing path is really on the requested branch                          | Fixes the slug collision below                                                           |
-| Occupancy lock     | Enforces one agent per worktree, using `git worktree lock`                              | The rule is only a convention today, and Git already has the mechanism                   |
-| Local file seeding | Copies chosen gitignored files into new worktrees                                       | Covers local settings that Nix and direnv do not provide                                 |
+| Feature                | What it does                                                                      | Command          |
+| ---------------------- | --------------------------------------------------------------------------------- | ---------------- |
+| Placement              | Puts every worktree at `<parent>/<repo>.worktrees/<slug>`                         | `create`         |
+| Branch setup           | Uses an existing branch, or creates one from a base                               | `create`         |
+| Create safety          | Refuses an existing path that is on another branch, or is no worktree at all      | `create`         |
+| Submodule provisioning | Initialises submodules; if that fails, warns without failing the caller           | `provision`      |
+| Trust inheritance      | Applies the `.envrc` rule above                                                   | `provision`      |
+| Local file seeding     | Copies chosen gitignored files into a new worktree                                | `provision`      |
+| Actor identity         | Gives each worktree its own identity, for trackers and similar tools              | `actor`          |
+| Status view            | Shows branch, dirty, unpushed, merged and in-use state, with `--json`             | `status`         |
+| Read-only check        | Answers "may this be removed?" and changes nothing                                | `check`          |
+| In-use detection       | Refuses removal while a process is running in the worktree, to protect an agent   | `check`, `guard` |
+| Occupancy lock         | Marks a worktree as taken, using `git worktree lock`                              | `lock`, `unlock` |
+| Removal guard          | Runs the checks, then clears stale submodule metadata                             | `guard`          |
+| Guarded removal        | Removes the worktree, deletes a merged branch, and optionally the remote one      | `remove`         |
+| Leftover sweep         | Classifies folders as live, orphan, repo or leftover; deletes only with `--apply` | `sweep`          |
+| Exit contract          | 0 done, 1 refused, 2 usage, 3 could not check                                     | all              |
 
 ### Out of scope
 
@@ -83,21 +78,21 @@ supervise agents (workmux and herdr today), rather than competing with them.
 
 ## Command interface
 
-`+` marks a command the Bash tool does not have. The main design choice is separating questions from actions: today
-`guard` does both, which is why you cannot ask whether removal is safe without changing anything.
+The main design choice is separating questions from actions: `status` and `check` change nothing, so you can ask whether
+removal is safe without the side effects of `guard`.
 
 ```text
 # Questions: never change anything
-worktree status [--json] [path]     + every worktree and its state
-worktree check [--json] [--force] [--ignore-in-use] <path>      + may it be removed, and if not, why?
+worktree status [--json] [path]     every worktree and its state
+worktree check [--json] [--force] [--ignore-in-use] <path>      may it be removed, and if not, why?
 worktree actor [dir]
 
 # Lifecycle
 worktree create <branch> [base]
 worktree provision [path]
 worktree remove [--force] [--ignore-in-use] [--keep-branch] [--delete-remote] <path>
-worktree lock [--reason <text>] [path]     + mark as occupied
-worktree unlock [path]                     + release it
+worktree lock [--reason <text>] [path]     mark as occupied
+worktree unlock [path]                     release it
 
 # Maintenance
 worktree sweep [--apply] [--repo <path>]... [<dir>...]
@@ -108,7 +103,7 @@ worktree guard [--force] [--ignore-in-use] [path]     check, then clear metadata
 
 `--json` is the agent interface: agents act on a verdict instead of parsing Git output.
 
-### Guarantees that must survive
+### Guarantees
 
 1. **`--force` covers only the worktree's own uncommitted changes.** Submodule changes and unpushed submodule commits
    are refused regardless.
@@ -122,19 +117,7 @@ worktree guard [--force] [--ignore-in-use] [path]     check, then clear metadata
 1. **`submodule deinit` is never run in a linked worktree.** Its configuration is shared, so it would de-register the
    main checkout's submodules.
 1. **A remote branch is deleted last, and only on request.**
-
-## Defects fixed since the Bash tool
-
-The port first matched Bash, then fixed each of these as its own commit with a regression test. The
-[porting guide](./porting-guide.md#intended-differences-from-bash) lists them beside the other intended differences.
-
-- **Slug collision.** `feat/x` and `feat-x` both become the slug `feat-x`, and `create` used to hand back whichever was
-  there. It now refuses a path on another branch.
-- **Partial removal.** `remove` used to delete the worktree, then refuse on an unmerged branch. It now checks first.
-- **Repository-wide prune.** `remove` used to run `git worktree prune`, which deleted the clones of **other** stale
-  registrations unchecked, unpushed commits included. Found during the port. This was real data loss.
-- **`provision` failing its caller.** A failed `direnv allow` used to fail workmux's fail-fast hook, leaving a
-  half-created worktree.
+1. **`--help` and a mistyped option never act.** Nothing is created, and no branch is made.
 
 ## Technical decisions
 
@@ -157,8 +140,7 @@ The port first matched Bash, then fixed each of these as its own commit with a r
 
 ### Testing
 
-- **Black box:** `tests/black_box/` began as the Bash tool's own suite and drives the binary from outside. Every
-  intended difference from Bash is written down.
+- **Black box:** `tests/black_box/` drives the binary from outside, so it tests what callers get.
 - **Real Git:** tests run real `git` in throwaway repositories, because the bugs that matter come from Git's actual
   on-disk behaviour.
 - **Mutation testing:** `cargo-mutants` on the safety code. It reports mutants that fail to compile as `unviable`,
@@ -170,7 +152,7 @@ The port first matched Bash, then fixed each of these as its own commit with a r
 It reads `/proc/<pid>/cwd` on Linux, and runs `lsof` on macOS, whose path has not been run yet. If it cannot run, it
 exits 3 rather than guessing. A process inside the worktree refuses removal, `--force` does not override that, and
 `--ignore-in-use` does, naming each process it left running. The measurements, and what they mean for callers, are in
-the [porting guide](./porting-guide.md#in-use-detection).
+the [internals guide](./internals.md#in-use-detection).
 
 ### Locking
 
@@ -213,24 +195,21 @@ commit the target lacks keeps the branch. It deliberately does not use `git cher
 and it is narrower than Worktrunk's six conditions: when in doubt the branch stays, for `--force` to decide. It compares
 with local refs and does not fetch, so a squash merged on a forge counts only once it has been pulled.
 
-The owner does not squash-merge, so this was first deferred. It sits in its own commit, and can be reverted alone.
-
 ### JSON
 
 `status --json` and `check --json` are specified in [`json-schema.md`](./json-schema.md).
 
 ## How it fits with ai-harness
 
-`ai-harness` is the first consumer, and the Rust version has replaced its Bash tool.
+`ai-harness` is the first consumer, and adapts this tool to its own conventions.
 
-| Stays in ai-harness                                                  | Moves here                                 |
+| Lives in ai-harness                                                  | Lives here                                 |
 | -------------------------------------------------------------------- | ------------------------------------------ |
 | The `bd` wrapper and its tests; this tool should not know about `bd` | The command and its tests                  |
 | workmux and herdr hook wiring, and their unit checks                 | The packaged binary                        |
 | `homeModules.worktree` as a thin adapter over `worktreeKeeper.*`     | A Home Manager module with its own options |
 
-The adapter satisfies that repository's rule that its options live under `aiHarness.*`, so its hosts do not change. This
-project also supersedes the behaviour-preserving Python rewrite planned there.
+The adapter satisfies that repository's rule that its options live under `aiHarness.*`.
 
 ## Landscape
 
@@ -253,23 +232,8 @@ was never pushed. That is the gap this project exists to cover, and it is worth 
 Links: [Worktrunk](https://github.com/max-sixty/worktrunk), [Treehouse](https://github.com/kunchenguid/treehouse),
 [gtr](https://github.com/coderabbitai/git-worktree-runner).
 
-## Roadmap
+## Open work and decisions
 
-1. **Foundation docs.** Done.
-1. **Skeleton.** Flake, dev shell, CI and the CLI surface. Done.
-1. **Parity.** Port the six commands until the black-box suite passes, with each intentional difference written down.
-   Bash stays in production. Done.
-1. **Cutover.** Add the input to `ai-harness`, turn its module into the adapter, and delete the Bash tool only once its
-   unit checks and a real deployment are green. Done.
-1. **Fixes and features.** The known defects, read-only check, status with `--json`, in-use detection, occupancy lock,
-   then local file seeding. Done, ahead of cutover.
-1. **Later.** Merge detection. Done.
-
-This order is carried by bead priorities, with the port and cutover first. Bead dependencies record only real
-constraints, so a fix can land before cutover if there is a reason to.
-
-## Open questions
-
-Each one is a `decision` bead, so `bd list --type=decision` shows the current state. The JSON schema, automatic locking
-and seed files were decided on 2026-11-05 as reversible defaults, and await the owner's review while nothing depends on
-them yet.
+`bd ready` shows what can be done next. Each decision is a `decision` bead, so `bd list --type=decision --status=all`
+shows them with their reasons. The JSON schema, automatic locking and seed files were decided on 2026-11-05 as
+reversible defaults.

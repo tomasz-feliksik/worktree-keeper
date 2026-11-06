@@ -1,50 +1,36 @@
-# Setting up the repository
+# Working on the repository
 
-How this repository was created, how to clone it, and the Nix and Rust structure it uses. What the project is and why
-these choices were made: [`project-overview.md`](./project-overview.md).
+How to get a working checkout, how the repository is laid out, and how to release it. What the project is and why these
+choices were made: [`project-overview.md`](./project-overview.md).
 
-All of this has been done in this repository. It is written down so it can be repeated or checked, and so a new machine
-can be set up from it.
+## Get a checkout
 
-## 1. Create the repository
-
-Needs `gh`, authenticated, and `bd` 1.0 or newer.
+Needs Nix, direnv and `bd` 1.0 or newer.
 
 ```bash
-gh repo create tomasz-feliksik/worktree-keeper --public \
-  --description "Keeps agent git worktrees safe to create, inspect and remove"
-git clone git@github.com:tomasz-feliksik/worktree-keeper.git ~/code/projects/worktree-keeper
-cd ~/code/projects/worktree-keeper
-git symbolic-ref HEAD refs/heads/main
+git clone git@github.com:tomasz-feliksik/worktree-keeper.git
+cd worktree-keeper
+bd init --non-interactive    # restores issues from refs/dolt/data
+git status                   # bd may rewrite its generated files; restore anything you did not intend to change
+bd stats                     # check the issue count
+direnv allow
 ```
 
-Do not run the tracker setup below from a linked worktree: `bd init` there walks up to `~/.beads` and builds the tracker
-in the wrong place.
+This restore path has not been tested on this repository yet. Do not run `bd init` from a linked worktree: it walks up
+to `~/.beads` and builds the tracker in the wrong place.
 
-## 2. Set up the tracker
+## Check your work
+
+Check by exit status, not by reading the end of the output.
 
 ```bash
-bd init --non-interactive
-chmod 700 .beads
-git config beads.role maintainer
-
-# Not used here.
-bd setup cursor --remove
-git rm .claude/settings.json    # a second `bd prime` hook; the global one already covers it
-
-bd dolt remote add origin git+https://github.com/tomasz-feliksik/worktree-keeper.git --allow-git-origin
-bd config set sync.remote "https://github.com/tomasz-feliksik/worktree-keeper.git"
+nix develop --command just fmt
+nix develop --command just check; echo "rc=$?"    # lint and every test: what CI runs
+nix flake check; echo "rc=$?"                     # builds, Clippy, formatting, Home Manager module
+nix build .#default && ./result/bin/worktree --version
 ```
 
-`bd init` commits its own files. Issues then sync with `bd dolt push`, which writes `refs/dolt/data` on the remote and
-also creates a `__dolt_remote_info__` branch there. That branch is normal bookkeeping.
-
-**Push `main` before the first `bd dolt push`.** On an empty GitHub repository, the first branch to arrive becomes the
-default.
-
-Git pushes do not carry the tracker, so finishing a session takes two pushes: `bd dolt push` and `git push`.
-
-## 3. The structure
+## The structure
 
 The files themselves are the reference, so they are not repeated here.
 
@@ -56,14 +42,15 @@ deny.toml               dependency licence and advisory policy
 justfile                fmt, lint, test, check, black-box, mutants
 .markdownlint.yaml
 .envrc                  use flake
-.github/workflows/      CI: format_check, lint, test
+.github/workflows/      CI: format_check, lint, test, and release_check on tags
 modules/
   parts.nix             systems and flake modules, nothing else
   package.nix           package, checks, dev shell
   formatter.nix         treefmt, and what it must not touch
   home.nix              the Home Manager module and its check
 src/, tests/cli.rs      the CLI surface and its exit contract
-tests/black_box/        the black-box suite
+tests/json.rs           the --json contract
+tests/black_box/        the black-box suite: see internals.md
 docs/
 ```
 
@@ -96,48 +83,28 @@ There is nothing to configure. Other modules reach the command through `worktree
 hook run by a long-lived server cannot rely on `PATH`. `checks.home-module` builds a test home and runs the command from
 it.
 
+## The tracker
+
+Issues live in a local Dolt database and sync to `refs/dolt/data` on the same remote. That ref is public, like
+everything else here. Git pushes do not carry it, so finishing a session takes two pushes: `bd dolt push` and
+`git push`. The `__dolt_remote_info__` branch on the remote is normal bookkeeping, and CI skips it.
+
+```bash
+git ls-remote origin 'refs/dolt/*'    # prints refs/dolt/data
+bd dolt remote list
+```
+
 ## Releasing
 
 Consumers build from source, so a release is a version in `Cargo.toml` and a tag on a commit CI has passed. There are no
-binaries to upload.
+binaries to upload. A change to the docs or the tests alone needs no release.
 
-1. On a branch, set `version` in `Cargo.toml`, and let `cargo build` update `Cargo.lock`. Merge it.
+1. Set `version` in `Cargo.toml`, let `cargo build` update `Cargo.lock`, and commit both.
 1. Run `nix develop --command just mutants` on that commit, and explain or kill every survivor.
-1. Tag it and push the tag: `git tag -a v0.1.0 -m "v0.1.0"`, then `git push origin v0.1.0`.
+1. Tag it and push the tag: `git tag -a vX.Y.Z -m "vX.Y.Z"`, then `git push origin vX.Y.Z`.
 1. CI runs every job again on the tag, and `release_check` fails if the tag differs from what the binary reports. If it
    fails, leave that tag alone and release the next version.
-1. In a consumer, pin the tag: `github:tomasz-feliksik/worktree-keeper/v0.1.0`.
+1. In a consumer, pin the tag: `github:tomasz-feliksik/worktree-keeper/vX.Y.Z`.
 
 Before 1.0, a change that breaks a caller raises the minor version, and anything else raises the patch version. Breaking
 means a guarantee, a command-line option, an exit code, or the JSON schema: see [the schema's rules](json-schema.md).
-
-## Clone it on another machine
-
-```bash
-git clone git@github.com:tomasz-feliksik/worktree-keeper.git ~/code/projects/worktree-keeper
-cd ~/code/projects/worktree-keeper
-bd init --non-interactive    # restores issues from refs/dolt/data
-git status                   # bd may rewrite its generated files; restore anything you did not intend to change
-bd stats                     # check the issue count
-direnv allow
-```
-
-This restore path has not been tested on this repository yet.
-
-## Verify
-
-Check by exit status, not by reading the end of the output.
-
-```bash
-nix develop --command just fmt
-nix develop --command just check; echo "rc=$?"
-nix flake check; echo "rc=$?"
-nix build .#default && ./result/bin/worktree --version
-```
-
-For the tracker:
-
-```bash
-git ls-remote origin 'refs/dolt/*'    # after the first `bd dolt push`, prints refs/dolt/data
-bd dolt remote list
-```

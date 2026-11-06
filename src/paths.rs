@@ -20,7 +20,7 @@ use crate::outcome::CannotTell;
 const MAX_SYMLINKS: u32 = 40;
 
 /// An absolute path with every symlink, `.` and `..` resolved, so that two of them
-/// can be compared. The port of `resolve_from`, which used `realpath -m`: the
+/// can be compared. Like `realpath -m`, the
 /// path need not exist, and what does not exist is taken lexically.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]

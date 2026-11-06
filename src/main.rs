@@ -1,6 +1,6 @@
 //! `worktree`: keeps agent git worktrees safe to create, inspect and remove.
 //!
-//! See docs/porting-guide.md. Exit status: 0 done, 1 refused, 2 usage, 3 could not
+//! See docs/internals.md. Exit status: 0 done, 1 refused, 2 usage, 3 could not
 //! check. Nothing else may be returned.
 
 mod commands;

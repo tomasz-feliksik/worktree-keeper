@@ -1,5 +1,5 @@
 //! Is a process running inside this worktree? Answers measured with real callers, in
-//! docs/porting-guide.md § In-use detection:
+//! docs/internals.md § In-use detection:
 //!
 //! - The caller's own process and its ancestors never count. Descendants of an ancestor
 //!   do: sibling panes descend from the same tmux server, and they are what this looks
