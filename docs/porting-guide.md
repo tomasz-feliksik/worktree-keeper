@@ -1,18 +1,18 @@
 # Porting guide
 
-Everything needed to port the Bash tool to Rust, from this repository alone. Scope and decisions are in
+What the Rust tool kept from the Bash tool it replaced, and what it must keep doing. Scope and decisions are in
 [`project-overview.md`](./project-overview.md); the work is tracked in `bd`, starting with `bd ready`.
 
 ## What to read
 
-| File                         | What it is                                                                                   |
-| ---------------------------- | -------------------------------------------------------------------------------------------- |
-| `reference/bash/worktree.sh` | The implementation, frozen from `ai-harness` commit `2be0a66`. **Its comments are the spec** |
-| `tests/parity/test.sh`       | The black-box tests. They run against any build                                              |
-| This document                | What neither file says: callers, Git facts, the guarantee table and how to cut over          |
+| File                                         | What it is                                                                                                |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `git show v0.1.2:reference/bash/worktree.sh` | The Bash tool as it was deleted, frozen from `ai-harness` commit `2be0a66`. **Its comments are the spec** |
+| `tests/parity/test.sh`                       | The black-box tests. They run against any build                                                           |
+| This document                                | What neither file says: callers, Git facts, the guarantee table and how to cut over                       |
 
-Read the comments on a function before porting it. Most of them record a failure that was measured on a real repository,
-and the code is often shaped around it in ways that look removable.
+Read the comments on a function before changing what it became. Most of them record a failure that was measured on a
+real repository, and the code is often shaped around it in ways that look removable.
 
 The first 27 tests came from `ai-harness`, and passed against the Bash build on 2026-11-05. The port added the rest, for
 the defects it fixed and the commands it added. The two `bd` wrapper tests stayed in `ai-harness`, because the wrapper
@@ -36,9 +36,6 @@ either program there: make the real one fail instead, as `t_provision_never_fail
 Mutation testing stays out of the sandbox: it needs hundreds of incremental builds, and its survivors are read rather
 than gated on. It runs broken builds of a tool that deletes things as your own user, so `tests/parity/test.sh` keeps
 every path inside its scratch directory.
-
-`just parity-bash` runs the same suite against the frozen Bash tool, to see what the original does. It fails by design:
-on `t_help_never_acts`, on every defect fixed below, and on every test of a command Bash does not have.
 
 ## Intended differences from Bash
 
@@ -70,8 +67,6 @@ These began as Bash behaviour and were fixed after parity, each as its own commi
 | `remove` and other registrations  | Prunes the repository, deleting other entries' clones unchecked | Removes only its own                          |
 | `remove` and a silent remote      | Reads it as having no such branch, then deletes locally         | Reads it before deleting anything, and exit 3 |
 | `provision`, any failing step     | A failed `direnv allow` exits non-zero and fails workmux's hook | Warns and exits 0                             |
-
-**The Bash tool in production still has every one of these until cutover.** The third can lose commits.
 
 ## Who calls this tool
 
@@ -125,7 +120,7 @@ server through a real client's key bindings.
 ## Git facts the code depends on
 
 Each of these was measured, and each looks wrong enough for someone to "fix" it. Dates and versions are in the comments
-in `reference/bash/worktree.sh`.
+of the Bash tool: `git show v0.1.2:reference/bash/worktree.sh`.
 
 ### Submodule clones
 
@@ -336,4 +331,5 @@ CI's `test` job sets the same two.
 | workmux and herdr unit checks                              | Keep. These are the integration proof                                                                                                             |
 | workmux and herdr hooks                                    | Callers that close their own panes pass `--ignore-in-use`, and no others: see [in-use detection](#in-use-detection)                               |
 
-Delete `reference/bash/` here only after a real host has been deployed. Before then, it is the rollback reference.
+This is done. `reference/bash/` was deleted here once a real host ran the Rust tool, and tag `v0.1.2` is the last that
+has it.

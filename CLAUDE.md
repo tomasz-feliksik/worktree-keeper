@@ -1,7 +1,7 @@
 # worktree-keeper
 
-A Rust CLI (binary `worktree`) that makes agent git worktrees safe to create, inspect and remove. **Every command is
-implemented, but production still runs** the frozen Bash tool in `reference/bash/` until cutover.
+A Rust CLI (binary `worktree`) that makes agent git worktrees safe to create, inspect and remove. It replaced a Bash
+tool, and is in production through `ai-harness`.
 
 ## Start here
 
@@ -33,7 +33,6 @@ nix flake check                      # builds, Clippy, formatting, Home Manager 
   `WM_WORKTREE_PATH`, is explained in the porting guide.
 - **Everything here is public, the tracker too:** `refs/dolt/data` is readable by anyone, so docs and beads carry no
   private paths, private repository names or another repository's bead ids.
-- **`reference/bash/` is frozen.** Read it, do not edit it. It is deleted after cutover.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:cdcea925 -->
 ## Beads Issue Tracker

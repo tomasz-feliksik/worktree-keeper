@@ -8,8 +8,6 @@
       ".codex/**"
       "AGENTS.md"
       "CLAUDE.md"
-      # A frozen copy, compared with its source byte for byte.
-      "reference/**"
       "flake.lock"
       "Cargo.lock"
     ];

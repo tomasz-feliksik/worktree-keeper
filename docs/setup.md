@@ -64,7 +64,6 @@ modules/
   home.nix              the Home Manager module and its check
 src/, tests/cli.rs      the CLI surface and its exit contract
 tests/parity/test.sh    the black-box suite
-reference/bash/         the frozen Bash tool; deleted after cutover
 docs/
 ```
 
@@ -79,8 +78,7 @@ for the flake to see it**: an untracked file is silently absent, so run `git add
   is pinned by `flake.lock`, so moving the toolchain means `nix flake update fenix`.
 - **Three platforms.** `x86_64-darwin` is left out because Nixpkgs 26.11 dropped it, and evaluating it now fails. CI
   builds on `x86_64-linux` only.
-- **Formatters are not in the dev shell**, because `nix fmt` provides them. It leaves alone the files `bd` generates,
-  and `reference/`.
+- **Formatters are not in the dev shell**, because `nix fmt` provides them. It leaves alone the files `bd` generates.
 - **Actions in CI are pinned by commit**, with the version in a comment.
 
 ### The Home Manager module

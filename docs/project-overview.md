@@ -3,12 +3,12 @@
 **worktree-keeper makes agent git worktrees safe to create, inspect and remove.** It is a small Rust command-line tool
 that wraps the worktree lifecycle and refuses to delete anything it cannot prove is disposable.
 
-|            |                                                                        |
-| ---------- | ---------------------------------------------------------------------- |
-| Repository | `tomasz-feliksik/worktree-keeper` on GitHub, public                    |
-| Crate      | `worktree-keeper`                                                      |
-| Binary     | `worktree`                                                             |
-| Status     | Ported and tested. Production still runs the Bash tool in `ai-harness` |
+|            |                                                     |
+| ---------- | --------------------------------------------------- |
+| Repository | `tomasz-feliksik/worktree-keeper` on GitHub, public |
+| Crate      | `worktree-keeper`                                   |
+| Binary     | `worktree`                                          |
+| Status     | In production through `ai-harness`                  |
 
 This document records what the project is and what has been agreed. How to create the repository and its Nix structure
 is in [`setup.md`](./setup.md). How to do the port is in [`porting-guide.md`](./porting-guide.md).
@@ -132,8 +132,7 @@ The port first matched Bash, then fixed each of these as its own commit with a r
   there. It now refuses a path on another branch.
 - **Partial removal.** `remove` used to delete the worktree, then refuse on an unmerged branch. It now checks first.
 - **Repository-wide prune.** `remove` used to run `git worktree prune`, which deleted the clones of **other** stale
-  registrations unchecked, unpushed commits included. Found during the port. This is real data loss, and the Bash tool
-  has it until cutover.
+  registrations unchecked, unpushed commits included. Found during the port. This was real data loss.
 - **`provision` failing its caller.** A failed `direnv allow` used to fail workmux's fail-fast hook, leaving a
   half-created worktree.
 
@@ -158,8 +157,8 @@ The port first matched Bash, then fixed each of these as its own commit with a r
 
 ### Testing
 
-- **Parity:** the Bash tool's `test.sh` drives it as a black box, so the same suite can run against the Rust binary.
-  Every intended difference gets written down.
+- **Black box:** `tests/parity/test.sh` began as the Bash tool's own suite and drives the binary from outside. Every
+  intended difference from Bash is written down.
 - **Real Git:** tests run real `git` in throwaway repositories, because the bugs that matter come from Git's actual
   on-disk behaviour.
 - **Mutation testing:** `cargo-mutants` on the safety code. It reports mutants that fail to compile as `unviable`,
@@ -222,7 +221,7 @@ The owner does not squash-merge, so this was first deferred. It sits in its own 
 
 ## How it fits with ai-harness
 
-`ai-harness` is the first consumer. The Bash tool stays in production until the Rust version replaces it.
+`ai-harness` is the first consumer, and the Rust version has replaced its Bash tool.
 
 | Stays in ai-harness                                                  | Moves here                                 |
 | -------------------------------------------------------------------- | ------------------------------------------ |
@@ -261,7 +260,7 @@ Links: [Worktrunk](https://github.com/max-sixty/worktrunk), [Treehouse](https://
 1. **Parity.** Port the six commands until the black-box suite passes, with each intentional difference written down.
    Bash stays in production. Done.
 1. **Cutover.** Add the input to `ai-harness`, turn its module into the adapter, and delete the Bash tool only once its
-   unit checks and a real deployment are green.
+   unit checks and a real deployment are green. Done.
 1. **Fixes and features.** The known defects, read-only check, status with `--json`, in-use detection, occupancy lock,
    then local file seeding. Done, ahead of cutover.
 1. **Later.** Merge detection. Done.
