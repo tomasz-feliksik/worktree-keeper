@@ -608,6 +608,32 @@ t_in_use_refuses_and_names_the_process() {
   expect_rc 0
 }
 
+# --ignore-in-use removes without asking, and names what it left running. It covers
+# running processes and nothing else, so uncommitted changes still refuse.
+t_ignore_in_use_names_what_it_left_running() {
+  make_project
+  make_worktree busy
+  (cd "$WT" && exec sleep 300) >/dev/null 2>&1 &
+  local holder=$!
+  echo dirt >"$WT/dirt"
+  run remove --ignore-in-use "$WT"
+  expect_rc 1
+  expect_err "uncommitted changes"
+  rm "$WT/dirt"
+  run remove --ignore-in-use "$WT"
+  expect_rc 0
+  expect_out_mention "still running: sleep (pid $holder)"
+  [[ ! -e $WT ]] || fail "the worktree was not removed"
+  kill -0 "$holder" || fail "the holder should have been left running"
+  kill "$holder"
+  wait "$holder" 2>/dev/null
+
+  make_worktree idle
+  run remove --ignore-in-use "$WT"
+  expect_rc 0
+  [[ $out != *"still running"* ]] || fail "reported a process when there was none: $out"
+}
+
 # A locked worktree is refused naming the reason, under --force too, until unlocked.
 t_lock_refuses_until_unlocked() {
   make_project

@@ -170,8 +170,8 @@ The port first matched Bash, then fixed each of these as its own commit with a r
 
 It reads `/proc/<pid>/cwd` on Linux, and runs `lsof` on macOS, whose path has not been run yet. If it cannot run, it
 exits 3 rather than guessing. A process inside the worktree refuses removal, `--force` does not override that, and
-`--ignore-in-use` does. The measurements, and what they mean for callers, are in the
-[porting guide](./porting-guide.md#in-use-detection).
+`--ignore-in-use` does, naming each process it left running. The measurements, and what they mean for callers, are in
+the [porting guide](./porting-guide.md#in-use-detection).
 
 ### Locking
 
