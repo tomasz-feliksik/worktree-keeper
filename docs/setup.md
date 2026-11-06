@@ -99,7 +99,7 @@ bd dolt remote list
 Consumers build from source, so a release is a version in `Cargo.toml` and a tag on a commit CI has passed. There are no
 binaries to upload. A change to the docs or the tests alone needs no release.
 
-1. On a branch, set `version` in `Cargo.toml`, and let `cargo build` update `Cargo.lock`. Merge it.
+1. Set `version` in `Cargo.toml`, let `cargo build` update `Cargo.lock`, and commit both.
 1. Run `nix develop --command just mutants` on that commit, and explain or kill every survivor.
 1. Tag it and push the tag: `git tag -a vX.Y.Z -m "vX.Y.Z"`, then `git push origin vX.Y.Z`.
 1. CI runs every job again on the tag, and `release_check` fails if the tag differs from what the binary reports. If it
