@@ -3,7 +3,7 @@
 //! each test's own scratch directory, because `just mutants` runs broken builds of a tool
 //! that deletes things as your own user.
 //!
-//! Each test states the guarantee it holds; docs/porting-guide.md lists the mutation that
+//! Each test states the guarantee it holds; docs/internals.md lists the mutation that
 //! must turn each one red. `WORKTREE_UNDER_TEST` points the suite at another build, which
 //! is how `nix flake check` runs it against the wrapped package.
 

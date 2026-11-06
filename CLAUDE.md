@@ -7,7 +7,7 @@ tool, and is in production through `ai-harness`.
 
 1. `bd ready` for what can be done next. The work is in two epics: `worktree-keeper-elj` and `worktree-keeper-6fl`.
 1. `docs/project-overview.md` for what this is, the agreed scope and every decision. Read it before proposing features.
-1. `docs/porting-guide.md` before changing any command. It has what the code cannot tell you: callers, Git facts and
+1. `docs/internals.md` before changing any command. It has what the code cannot tell you: callers, Git facts and
    the guarantee table.
 1. `docs/setup.md` for the repository and Nix structure.
 
@@ -30,7 +30,7 @@ nix flake check                      # builds, Clippy, formatting, Home Manager 
 - **No import-from-derivation.** `ai-harness` evaluates this flake with it disabled and with warnings as errors.
 - **Runtime crates stay at `clap`, `serde` and `serde_json`.** Run `git` as a program, not through `git2` or `gix`.
 - **Keep it independent of its consumers.** No knowledge of `bd` or `ai-harness` belongs in the tool. The one exception,
-  `WM_WORKTREE_PATH`, is explained in the porting guide.
+  `WM_WORKTREE_PATH`, is explained in docs/internals.md.
 - **Everything here is public, the tracker too:** `refs/dolt/data` is readable by anyone, so docs and beads carry no
   private paths, private repository names or another repository's bead ids.
 

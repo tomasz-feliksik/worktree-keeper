@@ -11,7 +11,7 @@ that wraps the worktree lifecycle and refuses to delete anything it cannot prove
 | Status     | In production through `ai-harness`                  |
 
 This document records what the project is and what has been agreed. How to create the repository and its Nix structure
-is in [`setup.md`](./setup.md). How to do the port is in [`porting-guide.md`](./porting-guide.md).
+is in [`setup.md`](./setup.md). How to do the port is in [`internals.md`](./internals.md).
 
 ## Why it exists
 
@@ -126,7 +126,7 @@ worktree guard [--force] [--ignore-in-use] [path]     check, then clear metadata
 ## Defects fixed since the Bash tool
 
 The port first matched Bash, then fixed each of these as its own commit with a regression test. The
-[porting guide](./porting-guide.md#intended-differences-from-bash) lists them beside the other intended differences.
+[internals guide](./internals.md#intended-differences-from-bash) lists them beside the other intended differences.
 
 - **Slug collision.** `feat/x` and `feat-x` both become the slug `feat-x`, and `create` used to hand back whichever was
   there. It now refuses a path on another branch.
@@ -170,7 +170,7 @@ The port first matched Bash, then fixed each of these as its own commit with a r
 It reads `/proc/<pid>/cwd` on Linux, and runs `lsof` on macOS, whose path has not been run yet. If it cannot run, it
 exits 3 rather than guessing. A process inside the worktree refuses removal, `--force` does not override that, and
 `--ignore-in-use` does, naming each process it left running. The measurements, and what they mean for callers, are in
-the [porting guide](./porting-guide.md#in-use-detection).
+the [internals guide](./internals.md#in-use-detection).
 
 ### Locking
 
