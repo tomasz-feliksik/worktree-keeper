@@ -1,7 +1,7 @@
 //! States where a removal could lose work, or lose the wrong work: what git's defaults and
 //! the caller's environment hide from a check.
 
-use crate::support::{Ran, Sandbox, append, exists, ran, rm, write};
+use crate::support::{Ran, Sandbox, append, exists, ran, read, rm, tree_state, write};
 
 /// The tool with these variables in its environment, as a git hook would run it.
 fn run_with(s: &Sandbox, env: &[(&str, &str)], args: &[&str]) -> Ran {
@@ -148,4 +148,90 @@ fn a_commit_made_during_a_stopped_rebase_is_refused() {
     let check = s.run(&["check", &wt.path]);
     check.rc(1);
     check.err_has("detached HEAD");
+}
+
+// A tag or a remote holds a commit as surely as a branch does, and each is its own limb of
+// the query, so each is shown alone.
+#[test]
+fn a_detached_commit_a_tag_or_remote_holds_is_removable() {
+    let s = Sandbox::with_project();
+    let tagged = s.worktree("held-by-tag");
+    s.git(&tagged.path, &["checkout", "-q", "--detach"]);
+    s.commit_file(&tagged.path, "work", "tagged");
+    s.git(&tagged.path, &["tag", "kept"]);
+    s.run(&["check", &tagged.path]).rc(0);
+
+    let pushed = s.worktree("held-by-remote");
+    s.git(&pushed.path, &["checkout", "-q", "--detach"]);
+    s.commit_file(&pushed.path, "work", "pushed");
+    s.git(
+        &pushed.path,
+        &["push", "-q", "origin", "HEAD:refs/heads/pushed"],
+    );
+    s.run(&["check", &pushed.path]).rc(0);
+}
+
+// `git status` does not look at a file flagged skip-worktree or assume-unchanged, so an edit
+// under either flag has to be found another way. The check must not write while it does.
+#[test]
+fn an_edit_git_status_cannot_see_is_refused() {
+    let s = Sandbox::with_project();
+    for (name, flag) in [
+        ("skip", "--skip-worktree"),
+        ("assume", "--assume-unchanged"),
+    ] {
+        let wt = s.worktree(name);
+        s.git(&wt.path, &["update-index", flag, "README"]);
+        s.run(&["check", &wt.path]).rc(0);
+        let same = read(wt.file("README"));
+        write(wt.file("README"), &format!("{same}\n"));
+        s.run(&["check", &wt.path]).rc(0);
+
+        append(wt.file("README"), "only copy\n");
+        let before = tree_state(&[&wt.path, &wt.gitdir]);
+        let check = s.run(&["check", &wt.path]);
+        check.rc(1);
+        check.err_has("hidden: README");
+        assert_eq!(
+            tree_state(&[&wt.path, &wt.gitdir]),
+            before,
+            "{name}: the check changed the disk"
+        );
+        let remove = s.run(&["remove", &wt.path]);
+        remove.rc(1);
+        assert!(
+            read(wt.file("README")).contains("only copy"),
+            "{name}: a refusal lost the edit"
+        );
+
+        s.run(&["remove", "--force", &wt.path]).rc(0);
+        assert!(!exists(&wt.path), "{name}: --force did not remove it");
+    }
+}
+
+// The same in a submodule, which has its own index, and --force does not cover it.
+#[test]
+fn a_hidden_edit_in_a_submodule_is_refused_under_force() {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("hidden-sub");
+    s.git(
+        &wt.file("sub"),
+        &["update-index", "--skip-worktree", "README"],
+    );
+    append(wt.file("sub/README"), "only copy\n");
+    let guard = s.run(&["guard", "--force", &wt.path]);
+    guard.rc(1);
+    guard.err_has("submodule sub");
+    guard.err_has("hidden: README");
+}
+
+// Under a sparse checkout, a flagged file absent from disk is the normal state: nothing is
+// there to lose, and refusing would make such a worktree impossible to remove.
+#[test]
+fn a_flagged_file_absent_from_disk_holds_no_work() {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("sparse");
+    s.git(&wt.path, &["update-index", "--skip-worktree", "README"]);
+    rm(wt.file("README"));
+    s.run(&["remove", &wt.path]).rc(0);
 }

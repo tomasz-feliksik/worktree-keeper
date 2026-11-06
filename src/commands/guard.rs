@@ -17,9 +17,11 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io::ErrorKind;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::git::{Git, flag, shown, trimmed};
+use crate::git::{Git, flag, records, shown, trimmed, trimmed_path};
 use crate::in_use;
 use crate::outcome::{CannotTell, Outcome, RefusalKind, Stop};
 use crate::paths::{self, cannot_read};
@@ -324,7 +326,7 @@ pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome {
 /// `--untracked-files`, because `status.showUntrackedFiles` would otherwise decide what
 /// counts as safe to delete.
 pub fn status(dir: &Path) -> Result<Vec<u8>, CannotTell> {
-    Git::at(
+    let mut found = Git::at(
         dir,
         [
             "--no-optional-locks",
@@ -334,7 +336,81 @@ pub fn status(dir: &Path) -> Result<Vec<u8>, CannotTell> {
             "--ignore-submodules=all",
         ],
     )
-    .probe(dir)
+    .probe(dir)?;
+    found.extend(hidden_edits(dir)?);
+    Ok(found)
+}
+
+/// Edits to files flagged skip-worktree or assume-unchanged, which `git status` does not
+/// look at. Compared through a throwaway copy of the index with the flags cleared, so that
+/// git makes the comparison and a question leaves the real index as it was.
+///
+/// Only files on disk: under a sparse checkout, a flagged file is normally absent.
+fn hidden_edits(dir: &Path) -> Result<Vec<u8>, CannotTell> {
+    let listing = Git::at(dir, ["ls-files", "-v", "-z"]).probe(dir)?;
+    let flagged: Vec<&OsStr> = records(&listing)
+        .filter_map(flagged_path)
+        .filter(|path| on_disk(&dir.join(path)))
+        .collect();
+    if flagged.is_empty() {
+        return Ok(Vec::new());
+    }
+    let index = TempFile::create().map_err(|error| cannot_read(dir, &error))?;
+    let real_index = trimmed_path(
+        Git::at(
+            dir,
+            ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        )
+        .probe(dir)?,
+    );
+    fs::copy(&real_index, index.path()).map_err(|error| cannot_read(&real_index, &error))?;
+
+    // One run per flag: given both, `update-index` applies only the first it handles.
+    for flag in ["--no-skip-worktree", "--no-assume-unchanged"] {
+        let mut clear: Vec<&OsStr> = ["update-index", flag, "--"].map(OsStr::new).to_vec();
+        clear.extend(&flagged);
+        Git::at(dir, clear).index_file(index.path()).probe(dir)?;
+    }
+
+    let mut diff: Vec<&OsStr> = [
+        "--no-optional-locks",
+        "--literal-pathspecs",
+        "diff",
+        "--name-only",
+        "--ignore-submodules=all",
+        "--",
+    ]
+    .map(OsStr::new)
+    .to_vec();
+    diff.extend(&flagged);
+    let edited = Git::at(dir, diff).index_file(index.path()).probe(dir)?;
+
+    let mut report = Vec::new();
+    for line in edited
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        report.extend_from_slice(b"hidden: ");
+        report.extend_from_slice(line);
+        report.push(b'\n');
+    }
+    Ok(report)
+}
+
+/// The path in an `ls-files -v` record if it is flagged: `S` is skip-worktree, and a
+/// lowercase tag is assume-unchanged.
+fn flagged_path(record: &[u8]) -> Option<&OsStr> {
+    let (tag, rest) = record.split_first()?;
+    let path = rest.strip_prefix(b" ")?;
+    (*tag == b'S' || tag.is_ascii_lowercase()).then(|| OsStr::from_bytes(path))
+}
+
+/// Anything but a definite "not there" counts as there, for git to make the comparison.
+fn on_disk(path: &Path) -> bool {
+    !matches!(
+        fs::symlink_metadata(path),
+        Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory)
+    )
 }
 
 /// Commits a detached HEAD holds that nothing outside this worktree does. Not `--all`, as
