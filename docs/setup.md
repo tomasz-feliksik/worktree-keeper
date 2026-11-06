@@ -53,7 +53,7 @@ flake.nix               inputs, plus one line handing over to modules/
 rust-toolchain.toml     for rustup users; the Nix build takes its toolchain from fenix
 Cargo.toml, Cargo.lock
 deny.toml               dependency licence and advisory policy
-justfile                fmt, lint, test, check, parity, mutants
+justfile                fmt, lint, test, check, black-box, mutants
 .markdownlint.yaml
 .envrc                  use flake
 .github/workflows/      CI: format_check, lint, test
@@ -63,7 +63,7 @@ modules/
   formatter.nix         treefmt, and what it must not touch
   home.nix              the Home Manager module and its check
 src/, tests/cli.rs      the CLI surface and its exit contract
-tests/parity/test.sh    the black-box suite
+tests/black_box/        the black-box suite
 docs/
 ```
 

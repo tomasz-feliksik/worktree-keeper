@@ -16,7 +16,7 @@ tool, and is in production through `ai-harness`.
 ```bash
 nix develop --command just fmt       # format
 nix develop --command just check     # lint and test: the CI entry point
-nix develop --command just parity    # black-box suite; part of just check
+nix develop --command just black-box # black-box suite, or `just black-box sweep`; part of just test
 nix flake check                      # builds, Clippy, formatting, Home Manager module
 ```
 

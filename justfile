@@ -35,16 +35,26 @@ lint: fmt-check clippy audit deny markdownlint
 test:
     cargo test
 
-# The black-box suite: the guarantees, against the real binary and real git.
-parity *tests:
-    cargo build
-    WORKTREE="$PWD/target/debug/worktree" bash tests/parity/test.sh {{tests}}
+# The black-box suite, or the tests whose names contain one of the given words. A word that
+# matches nothing fails: cargo reads it as a green run of no tests.
+black-box *tests:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    log=$(mktemp)
+    trap 'rm -f "$log"' EXIT
+    cargo test --test black_box -- {{tests}} 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}
+    [[ $rc -eq 0 ]] || exit "$rc"
+    if grep -q '^running 0 tests$' "$log"; then
+      echo "no test matched: {{tests}}" >&2
+      exit 1
+    fi
 
-# Judged by the parity suite too, through tests/parity.rs. Read `unviable` as "not
-# tested", never as a pass. The excluded functions are macOS-only: Linux never compiles
-# them, so their mutants could only ever read as missed. Use --in-diff for a quick pass.
+# Read `unviable` as "not tested", never as a pass. The excluded functions are macOS-only:
+# Linux never compiles them, so their mutants could only ever read as missed. Use --in-diff
+# for a quick pass.
 mutants *args:
-    cargo mutants --jobs 8 --timeout 60 --exclude-re 'scan_lsof|own_chain_by_ps' {{args}} -- -- --include-ignored
+    cargo mutants --jobs 8 --timeout 60 --exclude-re 'scan_lsof|own_chain_by_ps' {{args}}
 
 # A release tag has to name the version the binary reports.
 check-tag tag:
@@ -57,4 +67,4 @@ check-tag tag:
       exit 1
     }
 
-check: lint test parity
+check: lint test

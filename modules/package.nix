@@ -32,6 +32,9 @@
       // {
         inherit cargoArtifacts;
         nativeBuildInputs = [pkgs.makeWrapper];
+        # The black-box suite has its own check below, against this package once wrapped.
+        # A consumer building this should not have to run it too.
+        cargoTestExtraArgs = "--bins --test cli --test json";
         postInstall = ''
           wrapProgram "$out/bin/worktree" --prefix PATH : ${pkgs.lib.makeBinPath runtimePrograms}
         '';
@@ -44,16 +47,21 @@
           inherit cargoArtifacts;
           cargoClippyExtraArgs = "--all-targets -- --deny warnings";
         });
-      # The black-box suite against the package that ships, in the sandbox. Its
-      # scaffolding gets git and direnv here, the tool gets them from its wrapper,
-      # and the second half proves that wrapper with nothing else on PATH.
-      parity =
-        pkgs.runCommand "worktree-keeper-parity" {
+      # The black-box suite against the package that ships, in the sandbox. Its scaffolding
+      # gets git and direnv here, and the tool gets them from its wrapper.
+      black-box = craneLib.cargoTest (commonArgs
+        // {
+          inherit cargoArtifacts;
+          nativeBuildInputs = runtimePrograms;
+          cargoTestExtraArgs = "--test black_box";
+          WORKTREE_UNDER_TEST = pkgs.lib.getExe self'.packages.default;
+        });
+      # The wrapper supplies git and direnv with nothing else on PATH.
+      wrapper =
+        pkgs.runCommand "worktree-keeper-wrapper" {
           nativeBuildInputs = [pkgs.git pkgs.direnv];
         } ''
           export WORKTREE=${pkgs.lib.getExe self'.packages.default}
-          bash ${../tests/parity/test.sh}
-
           export HOME=$PWD/home GIT_CONFIG_GLOBAL=$PWD/gitconfig GIT_CONFIG_NOSYSTEM=1
           mkdir "$HOME"
           git config --global user.name test
