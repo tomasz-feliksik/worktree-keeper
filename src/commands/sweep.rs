@@ -22,6 +22,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+use crate::commands::guard;
 use crate::git::{Git, trimmed_path};
 use crate::outcome::{CannotTell, Outcome, Stop};
 use crate::paths::{self, ResolvedPath, cannot_read};
@@ -279,6 +280,16 @@ fn sweep_registrations(repo: &Path, mode: Mode) -> Outcome {
                 );
                 blocked = true;
             }
+        }
+        if !guard::commits_only_head_holds(&admin)?.is_empty() {
+            say(
+                Sink::Stdout,
+                format_args!(
+                    "stale    {} — its detached HEAD holds commits no branch, tag or remote has; NOT pruning it",
+                    worktree.display()
+                ),
+            );
+            blocked = true;
         }
         if blocked {
             continue;

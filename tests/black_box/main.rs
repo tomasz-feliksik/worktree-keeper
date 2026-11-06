@@ -15,6 +15,7 @@ mod support;
 
 mod guard;
 mod help;
+mod lost_work;
 mod provision;
 mod questions;
 mod seed;

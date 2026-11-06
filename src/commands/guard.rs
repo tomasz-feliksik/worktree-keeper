@@ -1,9 +1,9 @@
 //! May this worktree be removed? Removal destroys two things nothing else keeps:
 //! the worktree's uncommitted changes, and its submodule clones. Each worktree gets
 //! its own under `<gitdir>/modules`, and a commit made in one exists nowhere else
-//! until pushed. The worktree's own commits are not at risk here: they live in the
-//! shared repository, and whether its branch is deleted is the removing tool's
-//! decision.
+//! until pushed. The worktree's own commits live in the shared repository, and whether
+//! its branch is deleted is the removing tool's decision, unless HEAD is detached: then
+//! only HEAD holds them, and it goes with the worktree.
 //!
 //! Then clears `<gitdir>/modules`: git refuses `worktree remove` on that directory's
 //! mere existence, and nothing else ever deletes it. That refusal is reached only
@@ -11,15 +11,17 @@
 //! unpushed check, not getting past git. Never "simplify" it into `--force`: that
 //! deletes submodule clones unchecked.
 //!
-//! `--force` accepts losing the worktree's own uncommitted changes. Submodule changes
-//! and unpushed submodule commits are refused regardless.
+//! `--force` accepts losing the worktree's own uncommitted changes and the commits on its
+//! detached HEAD. Submodule changes and unpushed submodule commits are refused regardless.
 
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io::ErrorKind;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::git::{Git, flag, shown, trimmed};
+use crate::git::{Git, flag, records, shown, trimmed, trimmed_path};
 use crate::in_use;
 use crate::outcome::{CannotTell, Outcome, RefusalKind, Stop};
 use crate::paths::{self, cannot_read};
@@ -28,7 +30,8 @@ use crate::submodules::{self, nested_in};
 use crate::temp::TempFile;
 use crate::worktree::LinkedWorktree;
 
-/// Whether the worktree's own uncommitted changes may be lost.
+/// Whether the worktree's own uncommitted changes, and commits only its HEAD holds, may
+/// be lost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OwnChanges {
     MustBeClean,
@@ -147,18 +150,7 @@ pub fn assess(worktree: &LinkedWorktree, rules: Rules) -> Outcome<Clearance> {
         }
     }
     if rules.own_changes == OwnChanges::MustBeClean {
-        let dirty = status(wt)?;
-        if !dirty.is_empty() {
-            return Err(Stop::refused_as(
-                RefusalKind::Dirty,
-                format!(
-                    "{} has uncommitted changes — commit them, or discard them with 'worktree remove --force {}':\n{}",
-                    wt.display(),
-                    wt.display(),
-                    shown(&dirty)
-                ),
-            ));
-        }
+        refuse_own_work(worktree)?;
     }
 
     let subs = submodules::populated(wt)?;
@@ -215,6 +207,37 @@ pub fn assess(worktree: &LinkedWorktree, rules: Rules) -> Outcome<Clearance> {
         top_level,
         stranded,
     })
+}
+
+/// What `--force` accepts losing: the worktree's uncommitted changes, and the commits only
+/// its detached HEAD holds.
+fn refuse_own_work(worktree: &LinkedWorktree) -> Outcome {
+    let wt = &worktree.path;
+    let dirty = status(wt)?;
+    if !dirty.is_empty() {
+        return Err(Stop::refused_as(
+            RefusalKind::Dirty,
+            format!(
+                "{} has uncommitted changes — commit them, or discard them with 'worktree remove --force {}':\n{}",
+                wt.display(),
+                wt.display(),
+                shown(&dirty)
+            ),
+        ));
+    }
+    let only_here = commits_only_head_holds(&worktree.gitdir)?;
+    if !only_here.is_empty() {
+        return Err(Stop::refused_as(
+            RefusalKind::DetachedCommits,
+            format!(
+                "{} is on a detached HEAD with commits no branch, tag or remote holds — keep them with 'git branch <name>', or discard them with 'worktree remove --force {}':\n{}",
+                wt.display(),
+                wt.display(),
+                shown(&only_here)
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The reason in a `git worktree lock`, if the worktree is locked. It can be empty.
@@ -300,17 +323,120 @@ pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome {
 
 /// `--no-optional-locks`: a plain `git status` refreshes the index when it can, and a
 /// question must not write. `check` and `status` are built on this.
+///
+/// `--untracked-files`, because `status.showUntrackedFiles` would otherwise decide what
+/// counts as safe to delete.
 pub fn status(dir: &Path) -> Result<Vec<u8>, CannotTell> {
-    Git::at(
+    let mut found = Git::at(
         dir,
         [
             "--no-optional-locks",
             "status",
             "--porcelain",
+            "--untracked-files=normal",
             "--ignore-submodules=all",
         ],
     )
-    .probe(dir)
+    .probe(dir)?;
+    found.extend(hidden_edits(dir)?);
+    Ok(found)
+}
+
+/// Edits to files flagged skip-worktree or assume-unchanged, which `git status` does not
+/// look at. Compared through a throwaway copy of the index with the flags cleared, so that
+/// git makes the comparison and a question leaves the real index as it was.
+///
+/// Only files on disk: under a sparse checkout, a flagged file is normally absent.
+fn hidden_edits(dir: &Path) -> Result<Vec<u8>, CannotTell> {
+    let listing = Git::at(dir, ["ls-files", "-v", "-z"]).probe(dir)?;
+    let flagged: Vec<&OsStr> = records(&listing)
+        .filter_map(flagged_path)
+        .filter(|path| on_disk(&dir.join(path)))
+        .collect();
+    if flagged.is_empty() {
+        return Ok(Vec::new());
+    }
+    let index = TempFile::create().map_err(|error| cannot_read(dir, &error))?;
+    let real_index = trimmed_path(
+        Git::at(
+            dir,
+            ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        )
+        .probe(dir)?,
+    );
+    fs::copy(&real_index, index.path()).map_err(|error| cannot_read(&real_index, &error))?;
+
+    // One run per flag: given both, `update-index` applies only the first it handles.
+    for flag in ["--no-skip-worktree", "--no-assume-unchanged"] {
+        let mut clear: Vec<&OsStr> = ["update-index", flag, "--"].map(OsStr::new).to_vec();
+        clear.extend(&flagged);
+        Git::at(dir, clear).index_file(index.path()).probe(dir)?;
+    }
+
+    let mut diff: Vec<&OsStr> = [
+        "--no-optional-locks",
+        "--literal-pathspecs",
+        "diff",
+        "--name-only",
+        "--ignore-submodules=all",
+        "--",
+    ]
+    .map(OsStr::new)
+    .to_vec();
+    diff.extend(&flagged);
+    let edited = Git::at(dir, diff).index_file(index.path()).probe(dir)?;
+
+    let mut report = Vec::new();
+    for line in edited
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        report.extend_from_slice(b"hidden: ");
+        report.extend_from_slice(line);
+        report.push(b'\n');
+    }
+    Ok(report)
+}
+
+/// The path in an `ls-files -v` record if it is flagged: `S` is skip-worktree, and a
+/// lowercase tag is assume-unchanged.
+fn flagged_path(record: &[u8]) -> Option<&OsStr> {
+    let (tag, rest) = record.split_first()?;
+    let path = rest.strip_prefix(b" ")?;
+    (*tag == b'S' || tag.is_ascii_lowercase()).then(|| OsStr::from_bytes(path))
+}
+
+/// Anything but a definite "not there" counts as there, for git to make the comparison.
+fn on_disk(path: &Path) -> bool {
+    !matches!(
+        fs::symlink_metadata(path),
+        Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory)
+    )
+}
+
+/// Commits a detached HEAD holds that nothing outside this worktree does, given its
+/// private git directory, which outlives a deleted worktree. Not `--all`, as for a submodule
+/// clone: that counts HEAD itself, and refs such as `refs/bisect` that are this worktree's
+/// own. A commit held only by some other kind of ref is refused, which `--force` or a branch
+/// settles.
+pub fn commits_only_head_holds(gitdir: &Path) -> Result<Vec<u8>, CannotTell> {
+    let branch = Git::in_clone(gitdir, ["branch", "--show-current"]).probe(gitdir)?;
+    if !trimmed(branch).is_empty() {
+        return Ok(Vec::new());
+    }
+    Git::in_clone(
+        gitdir,
+        [
+            "log",
+            "--oneline",
+            "HEAD",
+            "--not",
+            "--branches",
+            "--tags",
+            "--remotes",
+        ],
+    )
+    .probe(gitdir)
 }
 
 fn empty_directory(dir: &Path) -> Outcome {

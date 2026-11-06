@@ -45,6 +45,7 @@ for people; act on `kind`.
 | `locked`               | `git worktree lock` holds it                                                  |
 | `in_use`               | A process has its working directory inside it                                 |
 | `dirty`                | It has uncommitted changes                                                    |
+| `detached_commits`     | Its detached HEAD holds commits no branch, tag or remote does                 |
 | `dirty_submodule`      | A submodule has uncommitted changes. `--force` does not cover these           |
 | `unpushed_submodule`   | A submodule clone holds commits no remote has. `--force` does not cover these |
 | `stranded_differs`     | A stranded submodule's files differ from its recorded commit                  |
