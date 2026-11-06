@@ -1,9 +1,9 @@
 //! May this worktree be removed? Removal destroys two things nothing else keeps:
 //! the worktree's uncommitted changes, and its submodule clones. Each worktree gets
 //! its own under `<gitdir>/modules`, and a commit made in one exists nowhere else
-//! until pushed. The worktree's own commits are not at risk here: they live in the
-//! shared repository, and whether its branch is deleted is the removing tool's
-//! decision.
+//! until pushed. The worktree's own commits live in the shared repository, and whether
+//! its branch is deleted is the removing tool's decision, unless HEAD is detached: then
+//! only HEAD holds them, and it goes with the worktree.
 //!
 //! Then clears `<gitdir>/modules`: git refuses `worktree remove` on that directory's
 //! mere existence, and nothing else ever deletes it. That refusal is reached only
@@ -11,8 +11,8 @@
 //! unpushed check, not getting past git. Never "simplify" it into `--force`: that
 //! deletes submodule clones unchecked.
 //!
-//! `--force` accepts losing the worktree's own uncommitted changes. Submodule changes
-//! and unpushed submodule commits are refused regardless.
+//! `--force` accepts losing the worktree's own uncommitted changes and the commits on its
+//! detached HEAD. Submodule changes and unpushed submodule commits are refused regardless.
 
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -28,7 +28,8 @@ use crate::submodules::{self, nested_in};
 use crate::temp::TempFile;
 use crate::worktree::LinkedWorktree;
 
-/// Whether the worktree's own uncommitted changes may be lost.
+/// Whether the worktree's own uncommitted changes, and commits only its HEAD holds, may
+/// be lost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OwnChanges {
     MustBeClean,
@@ -147,18 +148,7 @@ pub fn assess(worktree: &LinkedWorktree, rules: Rules) -> Outcome<Clearance> {
         }
     }
     if rules.own_changes == OwnChanges::MustBeClean {
-        let dirty = status(wt)?;
-        if !dirty.is_empty() {
-            return Err(Stop::refused_as(
-                RefusalKind::Dirty,
-                format!(
-                    "{} has uncommitted changes — commit them, or discard them with 'worktree remove --force {}':\n{}",
-                    wt.display(),
-                    wt.display(),
-                    shown(&dirty)
-                ),
-            ));
-        }
+        refuse_own_work(wt)?;
     }
 
     let subs = submodules::populated(wt)?;
@@ -215,6 +205,36 @@ pub fn assess(worktree: &LinkedWorktree, rules: Rules) -> Outcome<Clearance> {
         top_level,
         stranded,
     })
+}
+
+/// What `--force` accepts losing: the worktree's uncommitted changes, and the commits only
+/// its detached HEAD holds.
+fn refuse_own_work(wt: &Path) -> Outcome {
+    let dirty = status(wt)?;
+    if !dirty.is_empty() {
+        return Err(Stop::refused_as(
+            RefusalKind::Dirty,
+            format!(
+                "{} has uncommitted changes — commit them, or discard them with 'worktree remove --force {}':\n{}",
+                wt.display(),
+                wt.display(),
+                shown(&dirty)
+            ),
+        ));
+    }
+    let only_here = commits_only_head_holds(wt)?;
+    if !only_here.is_empty() {
+        return Err(Stop::refused_as(
+            RefusalKind::DetachedCommits,
+            format!(
+                "{} is on a detached HEAD with commits no branch, tag or remote holds — keep them with 'git branch <name>', or discard them with 'worktree remove --force {}':\n{}",
+                wt.display(),
+                wt.display(),
+                shown(&only_here)
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The reason in a `git worktree lock`, if the worktree is locked. It can be empty.
@@ -315,6 +335,30 @@ pub fn status(dir: &Path) -> Result<Vec<u8>, CannotTell> {
         ],
     )
     .probe(dir)
+}
+
+/// Commits a detached HEAD holds that nothing outside this worktree does. Not `--all`, as
+/// for a submodule clone: that counts HEAD itself, and refs such as `refs/bisect` that are
+/// this worktree's own. A commit held only by some other kind of ref is refused, which
+/// `--force` or a branch settles.
+fn commits_only_head_holds(wt: &Path) -> Result<Vec<u8>, CannotTell> {
+    let branch = Git::at(wt, ["branch", "--show-current"]).probe(wt)?;
+    if !trimmed(branch).is_empty() {
+        return Ok(Vec::new());
+    }
+    Git::at(
+        wt,
+        [
+            "log",
+            "--oneline",
+            "HEAD",
+            "--not",
+            "--branches",
+            "--tags",
+            "--remotes",
+        ],
+    )
+    .probe(wt)
 }
 
 fn empty_directory(dir: &Path) -> Outcome {

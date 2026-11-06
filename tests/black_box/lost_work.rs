@@ -91,3 +91,61 @@ fn a_config_hiding_untracked_files_hides_nothing_from_the_check() {
     guard.err_has("submodule sub");
     assert!(exists(wt.file("sub/work")), "a refusal deleted the file");
 }
+
+// A commit on a detached HEAD is held only by that HEAD and its reflog, and both go with the
+// worktree. Holding it anywhere else makes the worktree removable again.
+#[test]
+fn a_commit_on_a_detached_head_is_refused_until_something_holds_it() {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("detached");
+    s.git(&wt.path, &["checkout", "-q", "--detach"]);
+    s.run(&["check", &wt.path]).rc(0);
+
+    s.commit_file(&wt.path, "work", "only copy");
+    let check = s.run(&["check", &wt.path]);
+    check.rc(1);
+    check.err_has("detached HEAD");
+    check.err_has("work");
+    s.run(&["check", "--json", &wt.path])
+        .out_has("\"detached_commits\"");
+    s.run(&["status", "--json", &wt.path])
+        .out_has("\"detached_commits\"");
+    let remove = s.run(&["remove", &wt.path]);
+    remove.rc(1);
+    assert!(exists(wt.file("work")), "a refusal deleted the worktree");
+
+    s.git(&wt.path, &["branch", "kept"]);
+    s.run(&["remove", &wt.path]).rc(0);
+    assert!(s.has_branch(&s.main, "kept"), "the branch holding it went");
+}
+
+// --force accepts losing it, as it accepts losing an unmerged branch.
+#[test]
+fn force_accepts_losing_a_commit_on_a_detached_head() {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("detached-forced");
+    s.git(&wt.path, &["checkout", "-q", "--detach"]);
+    s.commit_file(&wt.path, "work", "only copy");
+    s.run(&["remove", "--force", &wt.path]).rc(0);
+    assert!(!exists(&wt.path), "--force did not remove it");
+}
+
+// A rebase stopped partway has a clean tree, a detached HEAD and new commits on neither the
+// branch nor any other ref.
+#[test]
+fn a_commit_made_during_a_stopped_rebase_is_refused() {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("rebasing");
+    s.commit_file(&wt.path, "first", "one");
+    assert!(
+        !s.git_ok(&wt.path, &["rebase", "main", "-x", "exit 1"]),
+        "setup: the rebase should have stopped"
+    );
+    assert_eq!(s.git(&wt.path, &["branch", "--show-current"]), "");
+    s.run(&["check", &wt.path]).rc(0);
+
+    s.commit_file(&wt.path, "second", "only copy");
+    let check = s.run(&["check", &wt.path]);
+    check.rc(1);
+    check.err_has("detached HEAD");
+}
