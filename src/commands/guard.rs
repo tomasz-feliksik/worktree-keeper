@@ -93,12 +93,32 @@ pub fn run(path: Option<PathBuf>, rules: Rules) -> Outcome {
         })?;
     let worktree = LinkedWorktree::resolve(&path)?;
     let clearance = assess(&worktree, rules)?;
+    if rules.running == RunningProcesses::Ignore {
+        report_left_running(&worktree.path);
+    }
     clear(&worktree, clearance)?;
     say(
         Sink::Stdout,
         format_args!("{} may be removed", worktree.path.display()),
     );
     Ok(())
+}
+
+/// The record of what `--ignore-in-use` skipped, read now because a process stops
+/// matching once its directory is gone. Only a report: the caller has already accepted
+/// these processes, so failing to list them does not stop the removal.
+fn report_left_running(wt: &Path) {
+    match in_use::holders(wt) {
+        Ok(holders) => {
+            for holder in holders {
+                say(Sink::Stdout, format_args!("still running: {holder}"));
+            }
+        }
+        Err(_) => say(
+            Sink::Stderr,
+            format_args!("could not tell what is still running in {}", wt.display()),
+        ),
+    }
 }
 
 /// Every check, changing nothing on disk.

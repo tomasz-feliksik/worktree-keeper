@@ -111,9 +111,9 @@ server through a real client's key bindings.
 - **So cutover has a decision to make.** The refusal is correct when nothing owns those processes. A caller that closes
   its own panes passes `--ignore-in-use`, which leaves every other check in force. `--force` does not override it, on
   purpose: it accepts losing changes already made, not pulling a directory from under a working process.
-- **The override leaves a record.** `remove --ignore-in-use` asks nothing and prints `still running: <name> (pid <pid>)`
-  for each process it found. It removes the directory only, so those processes keep running until their owner closes
-  them.
+- **The override leaves a record.** `guard` and `remove` with `--ignore-in-use` ask nothing, and print
+  `still running: <name> (pid <pid>)` for each process they find. Neither stops a process: that stays with whoever
+  closes the panes.
 - **Only the caller's own chain is exempt:** its process and ancestors. A sibling shares an ancestor with the caller,
   and is exactly what this looks for, so excluding a process group or a whole subtree would defeat it.
 - **An unreadable `/proc` entry does not count.** It is normally another user's process: 543 of 1334 on the machine

@@ -620,6 +620,10 @@ t_ignore_in_use_names_what_it_left_running() {
   expect_rc 1
   expect_err "uncommitted changes"
   rm "$WT/dirt"
+  # A hook runs guard alone and its tool removes the worktree, so guard reports too.
+  run guard --ignore-in-use "$WT"
+  expect_rc 0
+  expect_out_mention "still running: sleep (pid $holder)"
   run remove --ignore-in-use "$WT"
   expect_rc 0
   expect_out_mention "still running: sleep (pid $holder)"
