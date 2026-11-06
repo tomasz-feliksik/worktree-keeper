@@ -150,7 +150,7 @@ pub fn assess(worktree: &LinkedWorktree, rules: Rules) -> Outcome<Clearance> {
         }
     }
     if rules.own_changes == OwnChanges::MustBeClean {
-        refuse_own_work(wt)?;
+        refuse_own_work(worktree)?;
     }
 
     let subs = submodules::populated(wt)?;
@@ -211,7 +211,8 @@ pub fn assess(worktree: &LinkedWorktree, rules: Rules) -> Outcome<Clearance> {
 
 /// What `--force` accepts losing: the worktree's uncommitted changes, and the commits only
 /// its detached HEAD holds.
-fn refuse_own_work(wt: &Path) -> Outcome {
+fn refuse_own_work(worktree: &LinkedWorktree) -> Outcome {
+    let wt = &worktree.path;
     let dirty = status(wt)?;
     if !dirty.is_empty() {
         return Err(Stop::refused_as(
@@ -224,7 +225,7 @@ fn refuse_own_work(wt: &Path) -> Outcome {
             ),
         ));
     }
-    let only_here = commits_only_head_holds(wt)?;
+    let only_here = commits_only_head_holds(&worktree.gitdir)?;
     if !only_here.is_empty() {
         return Err(Stop::refused_as(
             RefusalKind::DetachedCommits,
@@ -413,17 +414,18 @@ fn on_disk(path: &Path) -> bool {
     )
 }
 
-/// Commits a detached HEAD holds that nothing outside this worktree does. Not `--all`, as
-/// for a submodule clone: that counts HEAD itself, and refs such as `refs/bisect` that are
-/// this worktree's own. A commit held only by some other kind of ref is refused, which
-/// `--force` or a branch settles.
-fn commits_only_head_holds(wt: &Path) -> Result<Vec<u8>, CannotTell> {
-    let branch = Git::at(wt, ["branch", "--show-current"]).probe(wt)?;
+/// Commits a detached HEAD holds that nothing outside this worktree does, given its
+/// private git directory, which outlives a deleted worktree. Not `--all`, as for a submodule
+/// clone: that counts HEAD itself, and refs such as `refs/bisect` that are this worktree's
+/// own. A commit held only by some other kind of ref is refused, which `--force` or a branch
+/// settles.
+pub fn commits_only_head_holds(gitdir: &Path) -> Result<Vec<u8>, CannotTell> {
+    let branch = Git::in_clone(gitdir, ["branch", "--show-current"]).probe(gitdir)?;
     if !trimmed(branch).is_empty() {
         return Ok(Vec::new());
     }
-    Git::at(
-        wt,
+    Git::in_clone(
+        gitdir,
         [
             "log",
             "--oneline",
@@ -434,7 +436,7 @@ fn commits_only_head_holds(wt: &Path) -> Result<Vec<u8>, CannotTell> {
             "--remotes",
         ],
     )
-    .probe(wt)
+    .probe(gitdir)
 }
 
 fn empty_directory(dir: &Path) -> Outcome {

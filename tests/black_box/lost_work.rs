@@ -1,7 +1,7 @@
 //! States where a removal could lose work, or lose the wrong work: what git's defaults and
 //! the caller's environment hide from a check.
 
-use crate::support::{Ran, Sandbox, append, exists, ran, read, rm, tree_state, write};
+use crate::support::{Ran, Sandbox, append, exists, ran, read, rm, rm_rf, tree_state, write};
 
 /// The tool with these variables in its environment, as a git hook would run it.
 fn run_with(s: &Sandbox, env: &[(&str, &str)], args: &[&str]) -> Ran {
@@ -234,4 +234,32 @@ fn a_flagged_file_absent_from_disk_holds_no_work() {
     s.git(&wt.path, &["update-index", "--skip-worktree", "README"]);
     rm(wt.file("README"));
     s.run(&["remove", &wt.path]).rc(0);
+}
+
+// A registration whose directory is gone still has a HEAD, and it may be the only thing
+// holding a commit. A prune deletes it, so sweep leaves such a registration for a person.
+#[test]
+fn sweep_keeps_a_stale_registration_only_its_head_holds_commits_for() {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("stale-detached");
+    s.git(&wt.path, &["checkout", "-q", "--detach"]);
+    s.commit_file(&wt.path, "work", "only copy");
+    let commit = s.git(&wt.path, &["rev-parse", "HEAD"]);
+    rm_rf(&wt.path);
+
+    let dry = s.run(&["sweep", "--repo", &s.main]);
+    dry.rc(0);
+    dry.out_has("NOT pruning");
+    let apply = s.run(&["sweep", "--apply", "--repo", &s.main]);
+    apply.rc(0);
+    apply.out_has("NOT pruning");
+    assert!(exists(&wt.gitdir), "sweep pruned the only hold on a commit");
+    assert_eq!(s.git(&wt.gitdir, &["rev-parse", "HEAD"]), commit);
+
+    s.git(&s.main, &["branch", "kept", &commit]);
+    s.run(&["sweep", "--apply", "--repo", &s.main]).rc(0);
+    assert!(
+        !exists(&wt.gitdir),
+        "a held commit should not block a prune"
+    );
 }
