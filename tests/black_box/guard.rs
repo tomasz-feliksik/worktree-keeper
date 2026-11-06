@@ -579,16 +579,28 @@ fn stranded_retired_no_clone() {
     );
 }
 
-// workmux runs pre_remove in the worktree and names it in WM_WORKTREE_PATH.
+// workmux runs pre_remove in the worktree, so no path means the current directory. It also
+// sets WM_WORKTREE_PATH, which this tool once read: naming another worktree there proves it
+// no longer does.
 #[test]
-fn guard_reads_workmux_env() {
+fn guard_defaults_to_the_current_directory() {
     let s = Sandbox::with_project();
-    let wt = s.worktree("wm");
+    let here = s.worktree("here");
+    let other = s.worktree("other");
     let guard = ran(s
         .tool()
-        .current_dir("/")
-        .env("WM_WORKTREE_PATH", &wt.path)
+        .current_dir(&here.path)
+        .env("WM_WORKTREE_PATH", &other.path)
         .arg("guard"));
     guard.rc(0);
-    guard.out_has(&format!("{} may be removed", wt.path));
+    guard.out_has(&format!("{} may be removed", here.path));
+    assert!(
+        !guard.out.contains(&other.path),
+        "guard acted on WM_WORKTREE_PATH: {}",
+        guard.out
+    );
+    assert!(
+        is_dir(other.git_file("modules")),
+        "guard cleared the worktree the variable named"
+    );
 }

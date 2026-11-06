@@ -10,21 +10,17 @@ Read the comments on a function before changing it, too. Most of them record a f
 
 These contracts live in `ai-harness`, not here, and nothing in this repository would fail if they broke.
 
-| Caller                | How it calls                                            | What it relies on                                                                                                                               |
-| --------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| workmux `post_create` | `worktree provision`, in the new worktree               | **A failed submodule init must not fail it.** The hook is fail-fast, so a failure leaves a half-created worktree (measured on workmux 0.1.240). |
-| workmux `pre_remove`  | `worktree guard --ignore-in-use`, in the worktree       | A non-zero exit aborts removal, even under `workmux remove --force` (measured on 0.1.262). Reads `WM_WORKTREE_PATH`                             |
-| herdr create wrapper  | `path=$(worktree create "$branch" "$base")`             | **Stdout is only the path.** Git's output and all messages go to stderr                                                                         |
-| herdr remove wrapper  | `worktree remove "$path"`; a key adds `--ignore-in-use` | Exit status                                                                                                                                     |
-| The `bd` wrapper      | `worktree actor "$dir"`, with stderr discarded          | Prints the name or nothing, and stays quiet outside Git. It must not fail on a bad directory                                                    |
+| Caller                | How it calls                                            | What it relies on                                                                                                                                                                                      |
+| --------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| workmux `post_create` | `worktree provision`, in the new worktree               | **A failed submodule init must not fail it.** The hook is fail-fast, so a failure leaves a half-created worktree (measured on workmux 0.1.240).                                                        |
+| workmux `pre_remove`  | `worktree guard --ignore-in-use`, in the worktree       | A non-zero exit aborts removal, even under `workmux remove --force` (measured on 0.1.262). The hook's current directory is the worktree, from outside its window and from inside (measured on 0.1.278) |
+| herdr create wrapper  | `path=$(worktree create "$branch" "$base")`             | **Stdout is only the path.** Git's output and all messages go to stderr                                                                                                                                |
+| herdr remove wrapper  | `worktree remove "$path"`; a key adds `--ignore-in-use` | Exit status                                                                                                                                                                                            |
+| The `bd` wrapper      | `worktree actor "$dir"`, with stderr discarded          | Prints the name or nothing, and stays quiet outside Git. It must not fail on a bad directory                                                                                                           |
 
 **`provision` and failure.** Every step warns and exits 0, and `provision_never_fails_its_caller` holds that. The one
 refusal is a path that is not a directory: no real hook passes one, there is no worktree to half-create, and exit 0
 would hide a caller's typo.
-
-**`WM_WORKTREE_PATH`.** `guard`'s default path is `$WM_WORKTREE_PATH`, then the current directory. That is the tool's
-one piece of knowledge about a specific caller. `guard_reads_workmux_env` holds it. workmux also runs the hook inside
-the worktree, so it can probably be dropped. Nobody has confirmed that yet.
 
 **Placement.** `src/placement.rs` holds the one rule, and every command asks it. Worktrees that already live elsewhere
 keep working: `guard` and `remove` take a path, and `status` lists what git has registered, wherever it is.
@@ -227,6 +223,7 @@ one on 2026-11-05, when the suite was still shell. It has kept their names, and 
 | `--force` overrides the in-use check                           | `in_use_refuses_and_names_the_process`          |
 | The caller's own chain counts as a holder                      | `in_use_refuses_and_names_the_process`          |
 | `--ignore-in-use` ignored                                      | `in_use_refuses_and_names_the_process`          |
+| `guard` takes its default path from the environment            | `guard_defaults_to_the_current_directory`       |
 | `--ignore-in-use` hides what it left running                   | `ignore_in_use_names_what_it_left_running`      |
 | `--ignore-in-use` lets uncommitted changes through             | `ignore_in_use_names_what_it_left_running`      |
 | A lock does not stop removal                                   | `lock_refuses_until_unlocked`                   |
@@ -313,3 +310,4 @@ And these differences were chosen on purpose:
 | A probe's stderr             | Mixed into some parsed output                        | Never part of what is parsed                                  | Parsing a warning is a wrong answer          |
 | A failed `git worktree add`  | Git's own status, such as 128                        | Exit 1                                                        | The exit contract has no 128                 |
 | Unreadable directory entry   | A short list                                         | Exit 3                                                        | A short list is what this tool prevents      |
+| `guard` with no path         | `$WM_WORKTREE_PATH`, then the current directory      | The current directory                                         | workmux runs its hook in the worktree anyway |

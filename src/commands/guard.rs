@@ -79,18 +79,11 @@ pub struct Clearance {
 
 /// `guard`: assess, then clear. Never removes the worktree.
 pub fn run(path: Option<PathBuf>, rules: Rules) -> Outcome {
-    let path = path
-        .or_else(|| {
-            env::var_os("WM_WORKTREE_PATH")
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-        })
-        .map_or_else(env::current_dir, Ok)
-        .map_err(|error| {
-            CannotTell::new(format!(
-                "worktree: cannot read the current directory: {error}"
-            ))
-        })?;
+    let path = path.map_or_else(env::current_dir, Ok).map_err(|error| {
+        CannotTell::new(format!(
+            "worktree: cannot read the current directory: {error}"
+        ))
+    })?;
     let worktree = LinkedWorktree::resolve(&path)?;
     let clearance = assess(&worktree, rules)?;
     if rules.running == RunningProcesses::Ignore {

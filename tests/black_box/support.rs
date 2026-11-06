@@ -27,12 +27,11 @@ const GITCONFIG: &str = "\
 ";
 
 /// What the caller's environment could use to steer git, direnv or the tool itself.
-const INHERITED_STEERING: [&str; 9] = [
+const INHERITED_STEERING: [&str; 8] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
     "GIT_COMMON_DIR",
-    "WM_WORKTREE_PATH",
     "DIRENV_DIR",
     "DIRENV_FILE",
     "DIRENV_DIFF",

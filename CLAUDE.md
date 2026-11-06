@@ -29,8 +29,7 @@ nix flake check                      # builds, Clippy, formatting, Home Manager 
   deliberate exception to the usual project setup.
 - **No import-from-derivation.** `ai-harness` evaluates this flake with it disabled and with warnings as errors.
 - **Runtime crates stay at `clap`, `serde` and `serde_json`.** Run `git` as a program, not through `git2` or `gix`.
-- **Keep it independent of its consumers.** No knowledge of `bd` or `ai-harness` belongs in the tool. The one exception,
-  `WM_WORKTREE_PATH`, is explained in docs/internals.md.
+- **Keep it independent of its consumers.** No knowledge of `bd`, `ai-harness`, workmux or herdr belongs in the tool.
 - **Everything here is public, the tracker too:** `refs/dolt/data` is readable by anyone, so docs and beads carry no
   private paths, private repository names or another repository's bead ids.
 
