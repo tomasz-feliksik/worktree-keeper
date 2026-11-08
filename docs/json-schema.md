@@ -95,5 +95,6 @@ for people; act on `kind`.
 with nothing its target lacks, because it was squashed or rebased.
 
 The verdict answers "would `worktree remove`, with no options, succeed?", so unlike `check` it counts an unmerged branch
-as a refusal. `status` exits 0 if every worktree could be read, and 3 if any is `unknown`. A refusal is a normal answer
-to a question about many worktrees, so it does not change the exit status.
+as a refusal. The default branch is the exception: `remove` keeps it, so whether it is merged decides nothing. `status`
+exits 0 if every worktree could be read, and 3 if any is `unknown`. A refusal is a normal answer to a question about
+many worktrees, so it does not change the exit status.

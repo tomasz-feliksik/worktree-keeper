@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use crate::commands::check::{Format, Reason, SCHEMA_VERSION, Verdict};
 use crate::commands::guard::{self, OwnChanges, Rules, RunningProcesses};
-use crate::commands::remove::{Merged, merged_state, refuse_unmerged_branch};
+use crate::commands::remove::{Merged, merged_state, on_default_branch, refuse_unmerged_branch};
 use crate::commands::sweep;
 use crate::git::{Git, shown};
 use crate::in_use::{self, Holder};
@@ -218,6 +218,10 @@ impl Facets {
 /// What `worktree remove` with no options would say, short of acting.
 fn verdict_of(worktree: &LinkedWorktree) -> Outcome {
     guard::assess(worktree, PLAIN_REMOVE).map(drop)?;
+    // Removal keeps the default branch, so whether it is merged decides nothing.
+    if on_default_branch(worktree)? {
+        return Ok(());
+    }
     refuse_unmerged_branch(worktree).map(drop)
 }
 

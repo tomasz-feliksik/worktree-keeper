@@ -26,6 +26,8 @@ pub enum BranchFate {
 
 pub fn run(path: &Path, rules: Rules, fate: BranchFate) -> Outcome {
     let own_changes = rules.own_changes;
+    let default = fate != BranchFate::Keep && on_default_branch(&LinkedWorktree::resolve(path)?)?;
+    let fate = if default { BranchFate::Keep } else { fate };
     // Before the guard, which empties submodules: "refused" must mean nothing happened.
     let integrated = if own_changes == OwnChanges::MustBeClean && fate != BranchFate::Keep {
         refuse_unmerged_branch(&LinkedWorktree::resolve(path)?)? == Merged::Integrated
@@ -73,6 +75,13 @@ pub fn run(path: &Path, rules: Rules, fate: BranchFate) -> Outcome {
         say(
             Sink::Stdout,
             "the worktree was detached; no branch to delete",
+        );
+        return Ok(());
+    }
+    if default {
+        say(
+            Sink::Stdout,
+            format_args!("kept branch {branch}: it is the default branch"),
         );
         return Ok(());
     }
@@ -198,6 +207,43 @@ pub fn refuse_unmerged_branch(worktree: &LinkedWorktree) -> Outcome<Merged> {
             ),
         )),
     }
+}
+
+/// Whether the worktree has the repository's default branch checked out. Removing a
+/// worktree never deletes that branch: it belongs to the repository, and once merged and
+/// pushed `git branch -d` would delete it without a word.
+pub fn on_default_branch(worktree: &LinkedWorktree) -> Result<bool, CannotTell> {
+    let wt = &worktree.path;
+    let branch = shown(&Git::at(wt, ["branch", "--show-current"]).probe(wt)?);
+    is_default_branch(&worktree.main_checkout, &branch)
+}
+
+/// The default branch is the one the branch's remote names as its HEAD. With no remote
+/// HEAD to read, the names git and the forges start a repository with stand in for it.
+fn is_default_branch(main: &Path, branch: &str) -> Result<bool, CannotTell> {
+    if branch.is_empty() {
+        return Ok(false);
+    }
+    let remote = upstream_remote(main, branch)?;
+    let head = format!("refs/remotes/{remote}/HEAD");
+    match Git::at(main, ["symbolic-ref", "--quiet", head.as_str()]).code_and_output(main)? {
+        (Some(0), target) => {
+            let target = shown(&target);
+            let prefix = format!("refs/remotes/{remote}/");
+            return Ok(target.trim_end().strip_prefix(prefix.as_str()) == Some(branch));
+        }
+        // No remote HEAD: not fetched, or the remote is gone.
+        (Some(1), _) => {}
+        _ => {
+            return Err(CannotTell::new(format!(
+                "worktree: cannot inspect {}: git symbolic-ref could not read {head}",
+                main.display()
+            )));
+        }
+    }
+    let configured = Git::at(main, ["config", "--get", "init.defaultBranch"]).answer(main)?;
+    Ok(["main", "master"].contains(&branch)
+        || configured.is_some_and(|name| shown(&name).trim_end() == branch))
 }
 
 fn upstream_remote(main: &Path, branch: &str) -> Result<String, CannotTell> {

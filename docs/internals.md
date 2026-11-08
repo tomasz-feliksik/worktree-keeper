@@ -128,6 +128,10 @@ which is the only one left once main has retired the submodule. If no clone can 
 
 ### Merge detection
 
+- The default branch is never deleted, merged or not. It is the target of the branch's remote's `HEAD`
+  (`git symbolic-ref --quiet refs/remotes/<remote>/HEAD`, which exits 1 when there is none); without one, `main`,
+  `master` and `init.defaultBranch` stand in. A clone sets the remote `HEAD`; `git remote set-head <remote> --auto` sets
+  it on a repository that never had one.
 - `git merge-tree --write-tree` exits 0 on a clean merge and 1 on a conflict. Anything else is "could not check".
 - It writes the trees it makes even when asked only a question, so `GIT_OBJECT_DIRECTORY` points it at a scratch
   directory, with the real objects as an alternate. That list splits at colons unless the entry is C-quoted.
@@ -235,6 +239,11 @@ one on 2026-11-05, when the suite was still shell. It has kept their names, and 
 | Remote branch deleted without `--delete-remote`                | `remote_branch_deleted_last`                                       |
 | Remote branch deleted before the local one                     | `remote_branch_deleted_last`                                       |
 | A silent remote read as having no branch                       | `unreachable_remote_is_could_not_tell`                             |
+| The default branch deleted by `remove`                         | `remove_keeps_the_default_branch`                                  |
+| An unmerged default branch counted as a refusal                | `an_unpushed_default_branch_is_kept_not_refused`                   |
+| The remote HEAD not read                                       | `the_default_branch_is_what_the_remote_head_names`                 |
+| No `main`/`master` fallback without a remote HEAD              | `the_default_branch_is_what_the_remote_head_names`                 |
+| No `init.defaultBranch` fallback                               | `the_default_branch_is_what_the_remote_head_names`                 |
 | Sweep prunes a locked registration                             | `sweep_leaves_locked_registrations`                                |
 | `remove` prunes the whole repository                           | `remove_keeps_other_stale_registrations`                           |
 | `create` hands back an existing path unchecked                 | `create_refuses_a_slug_collision`                                  |
