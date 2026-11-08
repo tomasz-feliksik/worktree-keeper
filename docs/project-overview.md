@@ -117,6 +117,8 @@ worktree guard [--force] [--ignore-in-use] [path]     check, then clear metadata
 1. **`submodule deinit` is never run in a linked worktree.** Its configuration is shared, so it would de-register the
    main checkout's submodules.
 1. **A remote branch is deleted last, and only on request.**
+1. **The default branch is never deleted.** A worktree can have it checked out; `remove` takes the worktree and keeps
+   the branch, locally and on the remote, whatever the flags.
 1. **`--help` and a mistyped option never act.** Nothing is created, and no branch is made.
 1. **A commit only a detached HEAD holds is work.** `remove` refuses it without `--force`, and `sweep` never prunes a
    stale registration over it.
