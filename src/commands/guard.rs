@@ -853,6 +853,31 @@ fn short(commit: &str) -> &str {
 mod tests {
     use super::*;
 
+    const A: &str = "1111111111111111111111111111111111111111";
+    const B: &str = "2222222222222222222222222222222222222222";
+
+    #[test]
+    fn a_staged_file_is_never_a_pointer_change_though_its_objects_differ() {
+        let entry = format!("1 M. N... 100644 100644 100644 {A} {B} file");
+        assert!(PointerChange::parse(entry.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn a_staged_submodule_bump_is_a_pointer_change_naming_both_commits() {
+        let entry = format!("1 M. S... 160000 160000 160000 {A} {B} lib/sub");
+        let change = PointerChange::parse(entry.as_bytes()).expect("a pointer change");
+        assert_eq!(
+            (change.path, change.recorded, change.staged),
+            (Path::new("lib/sub"), A, B)
+        );
+    }
+
+    #[test]
+    fn a_submodule_with_only_content_changed_is_no_pointer_change() {
+        let entry = format!("1 .M S.M. 160000 160000 160000 {A} {A} lib/sub");
+        assert!(PointerChange::parse(entry.as_bytes()).is_none());
+    }
+
     #[test]
     fn a_commit_is_shortened_to_twelve_characters_when_it_has_them() {
         assert_eq!(short("0123456789abcdef"), "0123456789ab");

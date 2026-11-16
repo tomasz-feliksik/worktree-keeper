@@ -310,8 +310,9 @@ A full run takes about six minutes. Every survivor is killed or explained here. 
   symlink cycle never ends, and `cycle` tests hang rather than fail.
 - `submodules.rs`, `is_populated` as always true: can time out under the 60s limit. Without the limit it is caught, in
   about two minutes.
-- `remove.rs`, the detach's `!` deleted: the detach is redundant today, because `git worktree remove` has dropped the
-  checkout before `git branch -d` runs. It stays as a guard against that order changing.
+- `remove.rs`, the detach's `!` deleted in `remove_or_restore`: the detach is redundant today, because
+  `git worktree remove` has dropped the checkout before `git branch -d` runs. It stays as a guard against that order
+  changing.
 
 ## What consumers need
 
