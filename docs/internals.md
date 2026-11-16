@@ -339,6 +339,8 @@ A full run takes about six minutes. Every survivor is killed or explained here. 
 - `remove.rs`, the detach's `!` deleted in `remove_or_restore`: the detach is redundant today, because
   `git worktree remove` has dropped the checkout before `git branch -d` runs. It stays as a guard against that order
   changing.
+- `stale.rs`, the read size `64 * 1024` as `64 + 1024`: smaller pieces give the same answer, because a match whose next
+  byte has not arrived is kept for the next piece.
 
 ## What consumers need
 

@@ -106,5 +106,7 @@ binaries to upload. A change to the docs or the tests alone needs no release.
    fails, leave that tag alone and release the next version.
 1. In a consumer, pin the tag: `github:tomasz-feliksik/worktree-keeper/vX.Y.Z`.
 
-Before 1.0, a change that breaks a caller raises the minor version, and anything else raises the patch version. Breaking
-means a guarantee, a command-line option, an exit code, or the JSON schema: see [the schema's rules](json-schema.md).
+Before 1.0, a change that breaks a caller raises the minor version, and so does a new command, because that is what a
+consumer bumps for. Anything else raises the patch version. The `release` skill (`.claude/skills/release/`) drives these
+steps. Breaking means a guarantee, a command-line option, an exit code, or the JSON schema: see
+[the schema's rules](json-schema.md).
