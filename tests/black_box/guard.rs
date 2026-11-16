@@ -605,6 +605,16 @@ fn guard_defaults_to_the_current_directory() {
     );
 }
 
+// Whether git inside the worktree's submodule acts on the submodule's own clone. Not
+// `rev-parse --git-dir` succeeding: in an emptied submodule directory it succeeds too, by
+// finding the superproject, which is how a broken submodule looked healthy in
+// worktree-keeper-jwv.
+fn finds_its_own_clone(s: &Sandbox, wt: &Worktree) -> bool {
+    let (sub, clone) = (wt.file("sub"), wt.git_file("modules/sub"));
+    s.git_ok(&sub, &["rev-parse", "--absolute-git-dir"])
+        && s.git(&sub, &["rev-parse", "--absolute-git-dir"]).trim() == clone
+}
+
 /// Whether the pointer change is staged.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pointer {
@@ -647,7 +657,7 @@ fn pointer_change_is_refused_until_forced(pointer: Pointer) {
         "a refused remove cleared the submodule clones"
     );
     assert!(
-        s.git_ok(&sub, &["rev-parse", "--git-dir"]),
+        finds_its_own_clone(&s, &wt),
         "a refused remove left the submodule unable to find its clone"
     );
     s.run(&["check", "--force", &wt.path]).rc(0);
@@ -682,5 +692,64 @@ fn content_inside_a_submodule_is_not_a_pointer_change() {
         !check.out.contains("submodule_pointer"),
         "content inside a submodule reported as a pointer change: {}",
         check.out
+    );
+}
+
+// The guard sets the clones aside rather than deleting them, under a name git does not
+// refuse on, and the tool that removes the worktree next deletes them with its git
+// directory (worktree-keeper-c6y).
+#[test]
+fn guard_sets_the_clones_aside_where_git_removes_them() {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("aside");
+    s.run(&["guard", &wt.path]).rc(0);
+    assert!(!exists(wt.git_file("modules")), "modules/ is still there");
+    assert!(
+        is_dir(wt.git_file("modules.aside/sub/modules/nested")),
+        "the clones were not set aside"
+    );
+    s.git(&s.main, &["worktree", "remove", &wt.path]);
+    assert!(!exists(&wt.gitdir), "git left the git directory behind");
+}
+
+// What a guard set aside is still judged: an unpushed commit there is refused as anywhere.
+#[test]
+fn an_unpushed_commit_in_a_clone_set_aside_is_refused() {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("aside-unpushed");
+    s.commit_in_submodule(&wt);
+    rm_rf(wt.file("sub"));
+    crate::support::mkdir(wt.file("sub"));
+    std::fs::rename(wt.git_file("modules"), wt.git_file("modules.aside")).unwrap();
+    let guard = s.run(&["guard", &wt.path]);
+    guard.rc(1);
+    guard.err_has("holds commits no remote has");
+    guard.err_has("modules.aside/sub");
+}
+
+// A clone already set aside is never overwritten by a second one: the guard refuses with
+// nothing changed.
+#[test]
+fn a_clone_already_set_aside_is_never_overwritten() {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("aside-twice");
+    // A copy of the real clones, remote-tracking refs and all, so that only the clash with
+    // what is already set aside can refuse: a bare clone would be refused as unpushed.
+    let copied = crate::support::ran(s.command("cp").args([
+        "-a",
+        &wt.git_file("modules"),
+        &wt.git_file("modules.aside"),
+    ]));
+    copied.rc(0);
+    let guard = s.run(&["guard", &wt.path]);
+    guard.rc(1);
+    guard.err_has("modules.aside");
+    assert!(
+        is_dir(wt.git_file("modules/sub")),
+        "modules/ was moved anyway"
+    );
+    assert!(
+        finds_its_own_clone(&s, &wt),
+        "the submodule was emptied though nothing was cleared"
     );
 }

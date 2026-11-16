@@ -78,6 +78,8 @@ impl Rules {
 pub struct Clearance {
     top_level: Vec<PathBuf>,
     stranded: Vec<PathBuf>,
+    /// Every live populated submodule, nested ones included, each after the one it is in.
+    live: Vec<PathBuf>,
 }
 
 /// `guard`: assess, then clear. Never removes the worktree.
@@ -87,17 +89,94 @@ pub fn run(path: Option<PathBuf>, rules: Rules) -> Outcome {
             "worktree: cannot read the current directory: {error}"
         ))
     })?;
-    let worktree = LinkedWorktree::resolve(&path)?;
+    // Kept as cleared: the tool that removes the worktree next deletes what was set aside.
+    prepare(&path, rules).map(drop)
+}
+
+/// Assess, then clear, and say so: what `guard` does, and what `remove` does before it
+/// asks git. The record lets `remove` put everything back if git then refuses.
+pub fn prepare(path: &Path, rules: Rules) -> Outcome<(LinkedWorktree, Cleared)> {
+    let worktree = LinkedWorktree::resolve(path)?;
     let clearance = assess(&worktree, rules)?;
     if rules.running == RunningProcesses::Ignore {
         report_left_running(&worktree.path);
     }
-    clear(&worktree, clearance)?;
+    let cleared = clear(&worktree, clearance)?;
     say(
         Sink::Stdout,
         format_args!("{} may be removed", worktree.path.display()),
     );
-    Ok(())
+    Ok((worktree, cleared))
+}
+
+/// What [`clear`] changed, so that a removal git refuses can be undone.
+#[derive(Debug)]
+#[must_use]
+pub struct Cleared {
+    worktree: PathBuf,
+    /// `<gitdir>/modules`, if it was set aside.
+    modules: Option<PathBuf>,
+    /// Each live submodule emptied, nested ones included, parent first, with the bytes of
+    /// its `.git` file.
+    gitfiles: Vec<(PathBuf, Vec<u8>)>,
+    stranded: Vec<PathBuf>,
+}
+
+impl Cleared {
+    /// Puts back what [`clear`] set aside and emptied: the clones where they were, then
+    /// each submodule's `.git` file as it was and its files from its own HEAD, parent
+    /// first, so a nested one finds its directory. Nothing in them is lost: each was proven
+    /// clean, and its index, HEAD and branch live in the clone, which never moved off disk.
+    /// A stranded submodule stays empty: its clone was gone before, and its files were
+    /// proven to be its recorded commit.
+    pub fn restore(self) -> Outcome {
+        if let Some(modules) = &self.modules {
+            fs::rename(aside_of(modules), modules).map_err(|error| {
+                CannotTell::new(format!(
+                    "worktree: cannot put {} back from {}: {error}",
+                    modules.display(),
+                    aside_of(modules).display()
+                ))
+            })?;
+        }
+        for (sub, gitfile) in &self.gitfiles {
+            let dir = self.worktree.join(sub);
+            fs::create_dir_all(&dir)
+                .and_then(|()| fs::write(dir.join(".git"), gitfile))
+                .map_err(|error| cannot_read(&dir, &error))?;
+            // Each level by hand: recursing would reach a nested one before its .git file.
+            Git::at(
+                &dir,
+                ["-c", "submodule.recurse=false", "reset", "--hard", "-q"],
+            )
+            .probe(&dir)?;
+        }
+        say(
+            Sink::Stderr,
+            format_args!(
+                "put back {} submodule(s) in {}",
+                self.gitfiles.len(),
+                self.worktree.display()
+            ),
+        );
+        for sub in &self.stranded {
+            say(
+                Sink::Stderr,
+                format_args!(
+                    "stranded submodule {} stays empty: its clone was already gone, and its files were its recorded commit",
+                    sub.display()
+                ),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Where [`clear`] sets a worktree's submodule clones aside: beside `modules`, under a name
+/// git does not refuse removal on, inside the git directory that `git worktree remove`
+/// deletes. A rename in one directory, so it cannot cross a filesystem.
+fn aside_of(modules: &Path) -> PathBuf {
+    modules.with_file_name(submodules::SET_ASIDE)
 }
 
 /// The record of what `--ignore-in-use` skipped, read now because a process stops
@@ -206,12 +285,14 @@ pub fn assess(worktree: &LinkedWorktree, rules: Rules) -> Outcome<Clearance> {
     }
 
     let top_level = live
-        .into_iter()
+        .iter()
         .filter(|sub| !nested_in(sub, &subs))
+        .cloned()
         .collect();
     Ok(Clearance {
         top_level,
         stranded,
+        live,
     })
 }
 
@@ -275,12 +356,28 @@ pub fn lock_reason(worktree: &LinkedWorktree) -> Result<Option<String>, CannotTe
 }
 
 /// With every clone proven disposable: empties the submodules and clears `modules/`.
-pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome {
+pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome<Cleared> {
     let wt = &worktree.path;
     let Clearance {
         top_level,
         stranded,
+        live,
     } = clearance;
+    let modules = worktree.gitdir.join("modules");
+    let aside = aside_of(&modules);
+    if paths::exists(&aside)? && paths::exists(&modules)? {
+        return Err(Stop::refused(format!(
+            "{} already holds submodule clones an earlier guard set aside, so nothing was cleared — remove the worktree, or move them back to {} by hand",
+            aside.display(),
+            modules.display()
+        )));
+    }
+    let mut gitfiles = Vec::new();
+    for sub in &live {
+        let gitfile = wt.join(sub).join(".git");
+        let bytes = fs::read(&gitfile).map_err(|error| cannot_read(&gitfile, &error))?;
+        gitfiles.push((sub.clone(), bytes));
+    }
     // Emptied by hand: the working-tree half of `submodule deinit -f`, and only that
     // half. deinit also unsets submodule.<name>.url/active/update, and that config is
     // shared by every worktree: run in a linked worktree it de-registers the submodules
@@ -314,7 +411,6 @@ pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome {
 
     // Never clear modules/ under a submodule that is still populated: that is the shape
     // nothing can inspect or remove afterwards.
-    let modules = worktree.gitdir.join("modules");
     let remaining = submodules::populated(wt)?;
     if !remaining.is_empty() {
         let list: Vec<_> = remaining
@@ -330,19 +426,31 @@ pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome {
             ),
         ));
     }
-    if paths::is_dir(&modules)? {
-        fs::remove_dir_all(&modules).map_err(|error| {
-            Stop::refused(format!("cannot delete {}: {error}", modules.display()))
+    // Set aside, not deleted: git may still refuse the removal, and then they go back.
+    let set_aside = paths::is_dir(&modules)?;
+    if set_aside {
+        fs::rename(&modules, &aside).map_err(|error| {
+            Stop::refused(format!(
+                "cannot move {} to {}: {error}",
+                modules.display(),
+                aside.display()
+            ))
         })?;
         say(
             Sink::Stdout,
             format_args!(
-                "cleared {} (submodule clones, all pushed; git refuses removal while it exists)",
-                modules.display()
+                "set {} aside as {} (submodule clones, all pushed; git refuses removal while modules exists, and deletes the copy with the worktree)",
+                modules.display(),
+                aside.display()
             ),
         );
     }
-    Ok(())
+    Ok(Cleared {
+        worktree: wt.clone(),
+        modules: set_aside.then_some(modules),
+        gitfiles,
+        stranded,
+    })
 }
 
 /// `--no-optional-locks`: a plain `git status` refreshes the index when it can, and a

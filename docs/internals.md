@@ -103,7 +103,17 @@ which is the only one left once main has retired the submodule. If no clone can 
   prune at all.
 - The worktree is detached before removal, so that `git branch -d` can delete the branch. `git worktree remove` has
   dropped the checkout by then anyway, so a mutant that skips the detach survives: see
-  [mutation testing](#mutation-testing). If `git worktree remove` itself fails, the worktree is left detached.
+  [mutation testing](#mutation-testing).
+- **Clearing is undone if git refuses.** The guard renames `<gitdir>/modules` to `<gitdir>/modules.aside` rather than
+  deleting it: git refuses removal only on the name `modules`, and deletes the copy with the git directory. Renaming
+  alone is not enough, because `git worktree remove` runs `git status`, which exits 128 on a submodule whose `.git` file
+  leads nowhere, so the submodules are still emptied first (measured on 2.56). If git then refuses, `remove` renames the
+  clones back, rewrites each submodule's saved `.git` file and resets it to its own HEAD, parent first and without
+  recursing, and points HEAD at the branch again. A stranded submodule stays empty: its clone was already gone.
+- **What is set aside is still judged.** The unpushed check reads `modules.aside` too, and a guard refuses to set clones
+  aside over ones already there.
+- **`git rev-parse --git-dir` succeeding inside a submodule proves nothing.** In an emptied submodule directory it finds
+  the superproject. Compare `--absolute-git-dir` with the clone's path.
 - A remote branch is deleted last. Deleting it first and then failing locally leaves a branch with no upstream.
 - A commit on a detached HEAD is held by that HEAD and its reflog, which live in the worktree's admin directory and go
   with it, and `gc` then destroys the commit. The check reads that directory rather than the worktree, so it also works
@@ -252,6 +262,9 @@ one on 2026-11-05, when the suite was still shell. It has kept their names, and 
 | No `main`/`master` fallback without a remote HEAD              | `the_default_branch_is_what_the_remote_head_names`                 |
 | No `init.defaultBranch` fallback                               | `the_default_branch_is_what_the_remote_head_names`                 |
 | Sweep prunes a locked registration                             | `sweep_leaves_locked_registrations`                                |
+| A removal git refuses is not put back                          | `a_removal_git_refuses_after_clearing_puts_every_submodule_back`   |
+| Clones set aside are not scanned for unpushed commits          | `an_unpushed_commit_in_a_clone_set_aside_is_refused`               |
+| Clones set aside over an earlier set                           | `a_clone_already_set_aside_is_never_overwritten`                   |
 | `remove` prunes the whole repository                           | `remove_keeps_other_stale_registrations`                           |
 | `create` hands back an existing path unchecked                 | `create_refuses_a_slug_collision`                                  |
 | Unmerged branch found only after removal                       | `unmerged_refusal_changes_nothing`                                 |

@@ -5,7 +5,7 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use crate::commands::guard::{self, OwnChanges, Rules};
+use crate::commands::guard::{self, Cleared, OwnChanges, Rules};
 use crate::git::{Git, shown, trimmed};
 use crate::outcome::{CannotTell, Outcome, RefusalKind, Stop};
 use crate::placement;
@@ -34,8 +34,7 @@ pub fn run(path: &Path, rules: Rules, fate: BranchFate) -> Outcome {
     } else {
         false
     };
-    guard::run(Some(path.to_path_buf()), rules)?;
-    let worktree = LinkedWorktree::resolve(path)?;
+    let (worktree, cleared) = guard::prepare(path, rules)?;
     let wt = &worktree.path;
     let main = &worktree.main_checkout;
     let branch = shown(&Git::at(wt, ["branch", "--show-current"]).probe(wt)?);
@@ -49,11 +48,6 @@ pub fn run(path: &Path, rules: Rules, fate: BranchFate) -> Outcome {
             ),
         );
     }
-    // Detached first, so that `git branch -d` can delete the branch afterwards.
-    if !branch.is_empty() {
-        Git::at(wt, ["checkout", "-q", "--detach"]).probe(wt)?;
-    }
-
     // Read before the branch goes: deleting it deletes its configuration too.
     let remote = upstream_remote(main, &branch)?;
 
@@ -62,7 +56,9 @@ pub fn run(path: &Path, rules: Rules, fate: BranchFate) -> Outcome {
         args.push("--force".into());
     }
     args.push(wt.clone());
-    Git::at(main, args).probe(wt)?;
+    remove_or_restore(&worktree, cleared, &branch, || {
+        Git::at(main, args).probe(wt).map(drop).map_err(Stop::from)
+    })?;
     // No `git worktree prune`: `worktree remove` has already deleted this worktree's
     // registration, and prune works on the whole repository, where it would delete the
     // unpushed clones of any other stale registration. Sweep judges those one by one.
@@ -102,6 +98,44 @@ pub fn run(path: &Path, rules: Rules, fate: BranchFate) -> Outcome {
         delete_remote_branch(main, &remote, &branch)?;
     }
     Ok(())
+}
+
+/// Detaches the worktree, so that `git branch -d` can delete its branch afterwards, then
+/// has git remove it. If git refuses, what the guard cleared is put back and the branch
+/// checked out again, so a refusal leaves the worktree as it was.
+fn remove_or_restore(
+    worktree: &LinkedWorktree,
+    cleared: Cleared,
+    branch: &str,
+    remove: impl FnOnce() -> Outcome,
+) -> Outcome {
+    let wt = &worktree.path;
+    if !branch.is_empty() {
+        Git::at(wt, ["checkout", "-q", "--detach"]).probe(wt)?;
+    }
+    let refusal = match remove() {
+        Ok(()) => return Ok(()),
+        Err(refusal) => refusal,
+    };
+    let reference = format!("refs/heads/{branch}");
+    let restored = cleared.restore().and_then(|()| {
+        if branch.is_empty() {
+            return Ok(());
+        }
+        // The detach moved no file, so pointing HEAD back is the whole undo.
+        Git::at(wt, ["symbolic-ref", "HEAD", reference.as_str()])
+            .probe(wt)
+            .map(drop)
+            .map_err(Stop::from)
+    });
+    match restored {
+        Ok(()) => Err(refusal),
+        Err(failed) => Err(CannotTell::new(format!(
+            "{refusal}\nworktree: and putting {} back failed, so it may be missing its submodules: {failed}",
+            wt.display()
+        ))
+        .into()),
+    }
 }
 
 /// Whether a worktree's branch is merged, by git's own rule.
@@ -319,5 +353,117 @@ fn delete_remote_branch(main: &Path, remote: &str, branch: &str) -> Outcome {
             "worktree: cannot inspect {remote} for branch {branch}, so it was left alone: git ls-remote failed"
         ))
         .into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::process::Command;
+
+    use super::*;
+    use crate::testutil::{Scratch, git};
+
+    const FILE_TRANSPORT: [&str; 2] = ["-c", "protocol.file.allow=always"];
+
+    fn output(dir: &Path, args: &[&str]) -> (bool, String) {
+        let ran = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            ran.status.success(),
+            String::from_utf8_lossy(&ran.stdout).trim().to_owned(),
+        )
+    }
+
+    /// A worktree on branch `w` of a project whose submodule `sub` has a nested `nested`,
+    /// all initialised, with `sub` on a local branch of its own.
+    fn worktree_with_nested_submodules(root: &Path) -> PathBuf {
+        for name in ["nested", "sub"] {
+            git(root, &["init", "-q", "--bare", &format!("{name}.git")]);
+            git(root, &["clone", "-q", &format!("{name}.git"), name]);
+            fs::write(root.join(name).join("README"), name).unwrap();
+            git(&root.join(name), &["add", "README"]);
+            git(&root.join(name), &["commit", "-q", "-m", name]);
+            git(&root.join(name), &["push", "-q", "origin", "HEAD"]);
+        }
+        let nested_url = root.join("nested.git");
+        let mut add = FILE_TRANSPORT.to_vec();
+        add.extend([
+            "submodule",
+            "-q",
+            "add",
+            nested_url.to_str().unwrap(),
+            "nested",
+        ]);
+        git(&root.join("sub"), &add);
+        git(&root.join("sub"), &["commit", "-q", "-m", "nested"]);
+        git(&root.join("sub"), &["push", "-q", "origin", "HEAD"]);
+
+        let project = root.join("project");
+        fs::create_dir(&project).unwrap();
+        git(&project, &["init", "-q"]);
+        let sub_url = root.join("sub.git");
+        let mut add = FILE_TRANSPORT.to_vec();
+        add.extend(["submodule", "-q", "add", sub_url.to_str().unwrap(), "sub"]);
+        git(&project, &add);
+        git(&project, &["commit", "-q", "-m", "sub"]);
+        let wt = root.join("wt");
+        git(
+            &project,
+            &["worktree", "add", "-q", "-b", "w", wt.to_str().unwrap()],
+        );
+        let mut init = FILE_TRANSPORT.to_vec();
+        init.extend(["submodule", "-q", "update", "--init", "--recursive"]);
+        git(&wt, &init);
+        git(&wt.join("sub"), &["checkout", "-q", "-b", "local"]);
+        wt
+    }
+
+    // A removal git refuses after the guard cleared the worktree puts it back as it was:
+    // every clone where it was, every submodule populated and clean on the same HEAD, and
+    // the worktree on its branch again (worktree-keeper-c6y).
+    #[test]
+    fn a_removal_git_refuses_after_clearing_puts_every_submodule_back() {
+        let scratch = Scratch::new();
+        let wt = worktree_with_nested_submodules(scratch.path());
+        let worktree = LinkedWorktree::resolve(&wt).unwrap();
+        let sub_head = output(&wt.join("sub"), &["rev-parse", "HEAD"]).1;
+        let (_, cleared) =
+            guard::prepare(&wt, Rules::from_flags(false, true)).expect("the guard should pass");
+
+        let refused = remove_or_restore(&worktree, cleared, "w", || {
+            Err(Stop::refused("git said no"))
+        });
+
+        assert_eq!(refused.unwrap_err().to_string(), "worktree: git said no");
+        let modules = worktree.gitdir.join("modules");
+        for (dir, clone) in [
+            (wt.join("sub"), modules.join("sub")),
+            (wt.join("sub/nested"), modules.join("sub/modules/nested")),
+        ] {
+            let (found, gitdir) = output(&dir, &["rev-parse", "--absolute-git-dir"]);
+            assert!(found, "{} cannot find its clone", dir.display());
+            assert_eq!(
+                Path::new(&gitdir),
+                clone,
+                "{} found another clone",
+                dir.display()
+            );
+            assert_eq!(
+                output(&dir, &["status", "--porcelain"]),
+                (true, String::new())
+            );
+        }
+        assert_eq!(output(&wt.join("sub"), &["rev-parse", "HEAD"]).1, sub_head);
+        assert_eq!(
+            output(&wt.join("sub"), &["branch", "--show-current"]).1,
+            "local"
+        );
+        assert_eq!(output(&wt, &["branch", "--show-current"]).1, "w");
+        assert!(!worktree.gitdir.join("modules.aside").exists());
     }
 }
