@@ -189,7 +189,7 @@ fn sweep_flat_layout() {
     dry.rc(0);
     dry.out_has(&format!("leftover {old}"));
     assert!(
-        !dry.out.contains("flat-live"),
+        !reported_as_disposable(&dry.out, &live),
         "a live flat-layout worktree was reported: {}",
         dry.out
     );
@@ -290,7 +290,7 @@ fn sweep_relative_paths() {
     let dry = s.run(&["sweep", "--repo", main, &root]);
     dry.rc(0);
     assert!(
-        !dry.out.contains("rel-live"),
+        !reported_as_disposable(&dry.out, &live),
         "a live worktree was reported: {}",
         dry.out
     );
@@ -299,7 +299,7 @@ fn sweep_relative_paths() {
     let applied = s.run(&["sweep", "--apply", "--repo", main, &root]);
     applied.rc(0);
     assert!(
-        !applied.out.contains("rel-live"),
+        !reported_as_disposable(&applied.out, &live),
         "--apply reported a live worktree: {}",
         applied.out
     );
@@ -320,4 +320,40 @@ fn sweep_relative_paths() {
         s.git_ok(&live, &["status"]),
         "--apply cut a live worktree off from its repository"
     );
+}
+
+// Whether sweep reports `path` as something it would delete or prune, or cannot vouch for.
+// A live worktree away from its place is still listed, as misplaced, and that is not this.
+fn reported_as_disposable(out: &str, path: &str) -> bool {
+    out.lines().any(|line| {
+        let line = line.trim_start_matches("worktree: ");
+        ["leftover", "orphan", "stale", "deleted", "pruned"]
+            .iter()
+            .any(|word| line.starts_with(word) && line.contains(path))
+    })
+}
+
+// A registered worktree away from its place is listed with the command that fixes it, and
+// never moved: the caller may have to follow a move with steps of its own.
+#[test]
+fn sweep_lists_a_misplaced_worktree_and_never_moves_it() {
+    let s = Sandbox::with_project();
+    let misplaced = format!("{}/wt-away", s.t);
+    s.git(
+        &s.main,
+        &["worktree", "add", "-q", "-b", "away", &misplaced],
+    );
+    let placed = s.create("home");
+    for args in [vec!["sweep"], vec!["sweep", "--apply"]] {
+        let swept = s.run_in(&s.main, &args);
+        swept.rc(0);
+        swept.out_has(&format!("misplaced {misplaced}"));
+        swept.out_has(&format!("worktree move {misplaced}"));
+        assert!(
+            !swept.out.contains(&format!("misplaced {placed}")),
+            "a placed worktree was listed: {}",
+            swept.out
+        );
+        assert!(is_dir(&misplaced), "{args:?} moved the worktree");
+    }
 }

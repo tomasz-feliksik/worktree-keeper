@@ -358,13 +358,10 @@ fn delete_remote_branch(main: &Path, remote: &str, branch: &str) -> Outcome {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use std::process::Command;
 
     use super::*;
-    use crate::testutil::{Scratch, git};
-
-    const FILE_TRANSPORT: [&str; 2] = ["-c", "protocol.file.allow=always"];
+    use crate::testutil::{Scratch, worktree_with_nested_submodules};
 
     fn output(dir: &Path, args: &[&str]) -> (bool, String) {
         let ran = Command::new("git")
@@ -377,50 +374,6 @@ mod tests {
             ran.status.success(),
             String::from_utf8_lossy(&ran.stdout).trim().to_owned(),
         )
-    }
-
-    /// A worktree on branch `w` of a project whose submodule `sub` has a nested `nested`,
-    /// all initialised, with `sub` on a local branch of its own.
-    fn worktree_with_nested_submodules(root: &Path) -> PathBuf {
-        for name in ["nested", "sub"] {
-            git(root, &["init", "-q", "--bare", &format!("{name}.git")]);
-            git(root, &["clone", "-q", &format!("{name}.git"), name]);
-            fs::write(root.join(name).join("README"), name).unwrap();
-            git(&root.join(name), &["add", "README"]);
-            git(&root.join(name), &["commit", "-q", "-m", name]);
-            git(&root.join(name), &["push", "-q", "origin", "HEAD"]);
-        }
-        let nested_url = root.join("nested.git");
-        let mut add = FILE_TRANSPORT.to_vec();
-        add.extend([
-            "submodule",
-            "-q",
-            "add",
-            nested_url.to_str().unwrap(),
-            "nested",
-        ]);
-        git(&root.join("sub"), &add);
-        git(&root.join("sub"), &["commit", "-q", "-m", "nested"]);
-        git(&root.join("sub"), &["push", "-q", "origin", "HEAD"]);
-
-        let project = root.join("project");
-        fs::create_dir(&project).unwrap();
-        git(&project, &["init", "-q"]);
-        let sub_url = root.join("sub.git");
-        let mut add = FILE_TRANSPORT.to_vec();
-        add.extend(["submodule", "-q", "add", sub_url.to_str().unwrap(), "sub"]);
-        git(&project, &add);
-        git(&project, &["commit", "-q", "-m", "sub"]);
-        let wt = root.join("wt");
-        git(
-            &project,
-            &["worktree", "add", "-q", "-b", "w", wt.to_str().unwrap()],
-        );
-        let mut init = FILE_TRANSPORT.to_vec();
-        init.extend(["submodule", "-q", "update", "--init", "--recursive"]);
-        git(&wt, &init);
-        git(&wt.join("sub"), &["checkout", "-q", "-b", "local"]);
-        wt
     }
 
     // A removal git refuses after the guard cleared the worktree puts it back as it was:

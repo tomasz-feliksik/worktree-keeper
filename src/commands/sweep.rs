@@ -132,6 +132,7 @@ pub fn run(mode: Mode, repos: Vec<PathBuf>, roots: Vec<PathBuf>) -> Outcome {
             .map_err(|error| cannot_read(repo, &error))?;
         if !seen.contains(&repo) {
             sweep_registrations(&repo, mode)?;
+            list_misplaced(&repo)?;
             seen.push(repo);
         }
     }
@@ -316,6 +317,30 @@ fn sweep_registrations(repo: &Path, mode: Mode) -> Outcome {
                     repo.display()
                 ),
             ),
+        }
+    }
+    Ok(())
+}
+
+/// Registered worktrees that live away from where placement puts them, each with the
+/// command that moves it. Listed, never moved, under `--apply` too: a caller may have to
+/// follow a move with steps of its own, such as moving an agent's history.
+fn list_misplaced(repo: &Path) -> Outcome {
+    let Ok(dir) = placement::dir_for(&common_of(repo)?) else {
+        // A repository whose worktrees have no place has none misplaced.
+        return Ok(());
+    };
+    for worktree in placement::linked_worktrees(repo)? {
+        if worktree.parent() != Some(dir.as_path()) && paths::is_dir(&worktree)? {
+            say(
+                Sink::Stdout,
+                format_args!(
+                    "misplaced {} — not in {}; fix with: worktree move {}",
+                    worktree.display(),
+                    dir.display(),
+                    worktree.display()
+                ),
+            );
         }
     }
     Ok(())

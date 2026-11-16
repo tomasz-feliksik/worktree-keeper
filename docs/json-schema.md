@@ -1,7 +1,7 @@
 # The `--json` schema
 
-`worktree check --json` and `worktree status --json` are the agent interface: an agent acts on a verdict instead of
-parsing Git output. This is a public contract from the first release. Until then it can still change.
+`worktree check --json`, `worktree status --json` and `worktree move --json` are the agent interface: an agent acts on a
+verdict instead of parsing Git output. This is a public contract from the first release. Until then it can still change.
 
 ## Versioning
 
@@ -53,6 +53,7 @@ for people; act on `kind`.
 | `stranded_untraceable` | A stranded submodule cannot be traced to a clone                              |
 | `still_populated`      | A submodule would still be populated after emptying                           |
 | `unmerged_branch`      | `status` only, and `remove`: its branch is not merged                         |
+| `destination_exists`   | `move` only: something is already at the destination                          |
 | `orphan`               | `status` only: its `.git` file leads nowhere                                  |
 | `could_not_check`      | Verdict `unknown`: a check could not run                                      |
 | `other`                | Anything else that refused                                                    |
@@ -99,3 +100,22 @@ The verdict answers "would `worktree remove`, with no options, succeed?", so unl
 as a refusal. The default branch is the exception: `remove` keeps it, so whether it is merged decides nothing. `status`
 exits 0 if every worktree could be read, and 3 if any is `unknown`. A refusal is a normal answer to a question about
 many worktrees, so it does not change the exit status.
+
+## `move --json <path> [destination]`
+
+```json
+{
+  "schema_version": 1,
+  "moved": { "from": "/home/me/code/worktrees/repo/feat-x", "to": "/home/me/code/repo.worktrees/feat-x" },
+  "reasons": []
+}
+```
+
+A caller that follows a move with steps of its own, such as moving an agent's history, chains them on `moved`.
+
+| `moved`            | `reasons` | Exit | Means                                                                                                                                                          |
+| ------------------ | --------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{ "from", "to" }` | empty     | 0    | Moved, and every check after the move matched the snapshot before it                                                                                           |
+| `null`             | empty     | 0    | Already there; nothing changed                                                                                                                                 |
+| `null`             | one entry | 1    | Refused before anything changed: `main_worktree`, `locked`, `in_use`, `destination_exists`, …                                                                  |
+| `null`             | one entry | 3    | `could_not_check`. Before the move: nothing changed. After it: the worktree may be at the new path, and the message names it and where both snapshots are kept |

@@ -47,6 +47,7 @@ pub enum RefusalKind {
     StrandedUntraceable,
     StillPopulated,
     UnmergedBranch,
+    DestinationExists,
     Other,
 }
 
@@ -67,6 +68,7 @@ impl RefusalKind {
             Self::StrandedUntraceable => "stranded_untraceable",
             Self::StillPopulated => "still_populated",
             Self::UnmergedBranch => "unmerged_branch",
+            Self::DestinationExists => "destination_exists",
             Self::Other => "other",
         }
     }
