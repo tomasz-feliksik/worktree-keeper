@@ -103,7 +103,17 @@ which is the only one left once main has retired the submodule. If no clone can 
   prune at all.
 - The worktree is detached before removal, so that `git branch -d` can delete the branch. `git worktree remove` has
   dropped the checkout by then anyway, so a mutant that skips the detach survives: see
-  [mutation testing](#mutation-testing). If `git worktree remove` itself fails, the worktree is left detached.
+  [mutation testing](#mutation-testing).
+- **Clearing is undone if git refuses.** The guard renames `<gitdir>/modules` to `<gitdir>/modules.aside` rather than
+  deleting it: git refuses removal only on the name `modules`, and deletes the copy with the git directory. Renaming
+  alone is not enough, because `git worktree remove` runs `git status`, which exits 128 on a submodule whose `.git` file
+  leads nowhere, so the submodules are still emptied first (measured on 2.56). If git then refuses, `remove` renames the
+  clones back, rewrites each submodule's saved `.git` file and resets it to its own HEAD, parent first and without
+  recursing, and points HEAD at the branch again. A stranded submodule stays empty: its clone was already gone.
+- **What is set aside is still judged.** The unpushed check reads `modules.aside` too, and a guard refuses to set clones
+  aside over ones already there.
+- **`git rev-parse --git-dir` succeeding inside a submodule proves nothing.** In an emptied submodule directory it finds
+  the superproject. Compare `--absolute-git-dir` with the clone's path.
 - A remote branch is deleted last. Deleting it first and then failing locally leaves a branch with no upstream.
 - A commit on a detached HEAD is held by that HEAD and its reflog, which live in the worktree's admin directory and go
   with it, and `gc` then destroys the commit. The check reads that directory rather than the worktree, so it also works
@@ -115,6 +125,11 @@ which is the only one left once main has retired the submodule. If no clone can 
 - `git status` does not look at a file flagged skip-worktree or assume-unchanged. The check compares them through a
   throwaway copy of the index with the flags cleared. Each flag takes its own `update-index` run: given both, it applies
   only the first it handles (measured on 2.56). A flagged file absent from disk is normal under a sparse checkout.
+- `--ignore-submodules=all` also hides a **submodule pointer** change: the submodule checked out, or staged, at a commit
+  other than the recorded one. Inside the submodule nothing is wrong when that commit is pushed, so the submodule checks
+  cannot see it either. A separate check reads `status --porcelain=v2 --ignore-submodules=dirty`, where `<c>` in
+  `S<c><m><u>` is `C` only for an unstaged change; a staged one shows as `<hH>` differing from `<hI>` (measured on
+  2.56). It is the worktree's own uncommitted change, so `--force` covers it.
 - `GIT_DIR` and `GIT_WORK_TREE` outrank `-C`. `pre-commit`, `post-commit` and `post-checkout` export `GIT_DIR`, and
   `git worktree add` exports both to its hooks (measured on 2.56). With `GIT_DIR` alone, git takes the current directory
   as the work tree, which looks right, but reports the other worktree's git directory, and so its clones. So `Git::new`
@@ -216,6 +231,8 @@ one on 2026-11-05, when the suite was still shell. It has kept their names, and 
 | `GIT_DIR` and `GIT_WORK_TREE` left in git's environment        | `leaked_git_dir_and_work_tree_cannot_redirect_to_another_worktree` |
 | `GIT_DIR` alone left in git's environment                      | `leaked_git_dir_alone_judges_the_clones_of_the_worktree_named`     |
 | `--untracked-files` not pinned                                 | `a_config_hiding_untracked_files_hides_nothing_from_the_check`     |
+| Pointer check passes `--ignore-submodules=all`                 | `an_unstaged_submodule_pointer_change_is_refused_until_forced`     |
+| A staged pointer change not compared, HEAD against index       | `a_staged_submodule_pointer_change_is_refused_until_forced`        |
 | A detached HEAD's own commits not refused                      | `a_commit_on_a_detached_head_is_refused_until_something_holds_it`  |
 | The detached query counts HEAD itself, with `--all`            | `a_commit_on_a_detached_head_is_refused_until_something_holds_it`  |
 | The detached query ignores tags or remotes                     | `a_detached_commit_a_tag_or_remote_holds_is_removable`             |
@@ -245,6 +262,9 @@ one on 2026-11-05, when the suite was still shell. It has kept their names, and 
 | No `main`/`master` fallback without a remote HEAD              | `the_default_branch_is_what_the_remote_head_names`                 |
 | No `init.defaultBranch` fallback                               | `the_default_branch_is_what_the_remote_head_names`                 |
 | Sweep prunes a locked registration                             | `sweep_leaves_locked_registrations`                                |
+| A removal git refuses is not put back                          | `a_removal_git_refuses_after_clearing_puts_every_submodule_back`   |
+| Clones set aside are not scanned for unpushed commits          | `an_unpushed_commit_in_a_clone_set_aside_is_refused`               |
+| Clones set aside over an earlier set                           | `a_clone_already_set_aside_is_never_overwritten`                   |
 | `remove` prunes the whole repository                           | `remove_keeps_other_stale_registrations`                           |
 | `create` hands back an existing path unchecked                 | `create_refuses_a_slug_collision`                                  |
 | Unmerged branch found only after removal                       | `unmerged_refusal_changes_nothing`                                 |
@@ -290,8 +310,9 @@ A full run takes about six minutes. Every survivor is killed or explained here. 
   symlink cycle never ends, and `cycle` tests hang rather than fail.
 - `submodules.rs`, `is_populated` as always true: can time out under the 60s limit. Without the limit it is caught, in
   about two minutes.
-- `remove.rs`, the detach's `!` deleted: the detach is redundant today, because `git worktree remove` has dropped the
-  checkout before `git branch -d` runs. It stays as a guard against that order changing.
+- `remove.rs`, the detach's `!` deleted in `remove_or_restore`: the detach is redundant today, because
+  `git worktree remove` has dropped the checkout before `git branch -d` runs. It stays as a guard against that order
+  changing.
 
 ## What consumers need
 

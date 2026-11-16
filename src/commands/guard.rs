@@ -78,6 +78,8 @@ impl Rules {
 pub struct Clearance {
     top_level: Vec<PathBuf>,
     stranded: Vec<PathBuf>,
+    /// Every live populated submodule, nested ones included, each after the one it is in.
+    live: Vec<PathBuf>,
 }
 
 /// `guard`: assess, then clear. Never removes the worktree.
@@ -87,17 +89,94 @@ pub fn run(path: Option<PathBuf>, rules: Rules) -> Outcome {
             "worktree: cannot read the current directory: {error}"
         ))
     })?;
-    let worktree = LinkedWorktree::resolve(&path)?;
+    // Kept as cleared: the tool that removes the worktree next deletes what was set aside.
+    prepare(&path, rules).map(drop)
+}
+
+/// Assess, then clear, and say so: what `guard` does, and what `remove` does before it
+/// asks git. The record lets `remove` put everything back if git then refuses.
+pub fn prepare(path: &Path, rules: Rules) -> Outcome<(LinkedWorktree, Cleared)> {
+    let worktree = LinkedWorktree::resolve(path)?;
     let clearance = assess(&worktree, rules)?;
     if rules.running == RunningProcesses::Ignore {
         report_left_running(&worktree.path);
     }
-    clear(&worktree, clearance)?;
+    let cleared = clear(&worktree, clearance)?;
     say(
         Sink::Stdout,
         format_args!("{} may be removed", worktree.path.display()),
     );
-    Ok(())
+    Ok((worktree, cleared))
+}
+
+/// What [`clear`] changed, so that a removal git refuses can be undone.
+#[derive(Debug)]
+#[must_use]
+pub struct Cleared {
+    worktree: PathBuf,
+    /// `<gitdir>/modules`, if it was set aside.
+    modules: Option<PathBuf>,
+    /// Each live submodule emptied, nested ones included, parent first, with the bytes of
+    /// its `.git` file.
+    gitfiles: Vec<(PathBuf, Vec<u8>)>,
+    stranded: Vec<PathBuf>,
+}
+
+impl Cleared {
+    /// Puts back what [`clear`] set aside and emptied: the clones where they were, then
+    /// each submodule's `.git` file as it was and its files from its own HEAD, parent
+    /// first, so a nested one finds its directory. Nothing in them is lost: each was proven
+    /// clean, and its index, HEAD and branch live in the clone, which never moved off disk.
+    /// A stranded submodule stays empty: its clone was gone before, and its files were
+    /// proven to be its recorded commit.
+    pub fn restore(self) -> Outcome {
+        if let Some(modules) = &self.modules {
+            fs::rename(aside_of(modules), modules).map_err(|error| {
+                CannotTell::new(format!(
+                    "worktree: cannot put {} back from {}: {error}",
+                    modules.display(),
+                    aside_of(modules).display()
+                ))
+            })?;
+        }
+        for (sub, gitfile) in &self.gitfiles {
+            let dir = self.worktree.join(sub);
+            fs::create_dir_all(&dir)
+                .and_then(|()| fs::write(dir.join(".git"), gitfile))
+                .map_err(|error| cannot_read(&dir, &error))?;
+            // Each level by hand: recursing would reach a nested one before its .git file.
+            Git::at(
+                &dir,
+                ["-c", "submodule.recurse=false", "reset", "--hard", "-q"],
+            )
+            .probe(&dir)?;
+        }
+        say(
+            Sink::Stderr,
+            format_args!(
+                "put back {} submodule(s) in {}",
+                self.gitfiles.len(),
+                self.worktree.display()
+            ),
+        );
+        for sub in &self.stranded {
+            say(
+                Sink::Stderr,
+                format_args!(
+                    "stranded submodule {} stays empty: its clone was already gone, and its files were its recorded commit",
+                    sub.display()
+                ),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Where [`clear`] sets a worktree's submodule clones aside: beside `modules`, under a name
+/// git does not refuse removal on, inside the git directory that `git worktree remove`
+/// deletes. A rename in one directory, so it cannot cross a filesystem.
+fn aside_of(modules: &Path) -> PathBuf {
+    modules.with_file_name(submodules::SET_ASIDE)
 }
 
 /// The record of what `--ignore-in-use` skipped, read now because a process stops
@@ -199,13 +278,21 @@ pub fn assess(worktree: &LinkedWorktree, rules: Rules) -> Outcome<Clearance> {
         }
     }
 
+    // After the submodule checks: an unpushed submodule commit is a pointer change too, and
+    // its own refusal, which --force does not cover, is the one to report.
+    if rules.own_changes == OwnChanges::MustBeClean {
+        refuse_pointer_changes(wt)?;
+    }
+
     let top_level = live
-        .into_iter()
+        .iter()
         .filter(|sub| !nested_in(sub, &subs))
+        .cloned()
         .collect();
     Ok(Clearance {
         top_level,
         stranded,
+        live,
     })
 }
 
@@ -240,6 +327,24 @@ fn refuse_own_work(worktree: &LinkedWorktree) -> Outcome {
     Ok(())
 }
 
+/// What `--force` accepts losing, besides `refuse_own_work`'s: a gitlink moved and not
+/// committed.
+fn refuse_pointer_changes(wt: &Path) -> Outcome {
+    let moved = pointer_changes(wt)?;
+    if !moved.is_empty() {
+        return Err(Stop::refused_as(
+            RefusalKind::SubmodulePointer,
+            format!(
+                "{} has an uncommitted submodule pointer change — commit the bump, or discard it with 'worktree remove --force {}':\n{}",
+                wt.display(),
+                wt.display(),
+                moved.join("\n")
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// The reason in a `git worktree lock`, if the worktree is locked. It can be empty.
 pub fn lock_reason(worktree: &LinkedWorktree) -> Result<Option<String>, CannotTell> {
     let file = worktree.gitdir.join("locked");
@@ -251,12 +356,28 @@ pub fn lock_reason(worktree: &LinkedWorktree) -> Result<Option<String>, CannotTe
 }
 
 /// With every clone proven disposable: empties the submodules and clears `modules/`.
-pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome {
+pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome<Cleared> {
     let wt = &worktree.path;
     let Clearance {
         top_level,
         stranded,
+        live,
     } = clearance;
+    let modules = worktree.gitdir.join("modules");
+    let aside = aside_of(&modules);
+    if paths::exists(&aside)? && paths::exists(&modules)? {
+        return Err(Stop::refused(format!(
+            "{} already holds submodule clones an earlier guard set aside, so nothing was cleared — remove the worktree, or move them back to {} by hand",
+            aside.display(),
+            modules.display()
+        )));
+    }
+    let mut gitfiles = Vec::new();
+    for sub in &live {
+        let gitfile = wt.join(sub).join(".git");
+        let bytes = fs::read(&gitfile).map_err(|error| cannot_read(&gitfile, &error))?;
+        gitfiles.push((sub.clone(), bytes));
+    }
     // Emptied by hand: the working-tree half of `submodule deinit -f`, and only that
     // half. deinit also unsets submodule.<name>.url/active/update, and that config is
     // shared by every worktree: run in a linked worktree it de-registers the submodules
@@ -290,7 +411,6 @@ pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome {
 
     // Never clear modules/ under a submodule that is still populated: that is the shape
     // nothing can inspect or remove afterwards.
-    let modules = worktree.gitdir.join("modules");
     let remaining = submodules::populated(wt)?;
     if !remaining.is_empty() {
         let list: Vec<_> = remaining
@@ -306,19 +426,31 @@ pub fn clear(worktree: &LinkedWorktree, clearance: Clearance) -> Outcome {
             ),
         ));
     }
-    if paths::is_dir(&modules)? {
-        fs::remove_dir_all(&modules).map_err(|error| {
-            Stop::refused(format!("cannot delete {}: {error}", modules.display()))
+    // Set aside, not deleted: git may still refuse the removal, and then they go back.
+    let set_aside = paths::is_dir(&modules)?;
+    if set_aside {
+        fs::rename(&modules, &aside).map_err(|error| {
+            Stop::refused(format!(
+                "cannot move {} to {}: {error}",
+                modules.display(),
+                aside.display()
+            ))
         })?;
         say(
             Sink::Stdout,
             format_args!(
-                "cleared {} (submodule clones, all pushed; git refuses removal while it exists)",
-                modules.display()
+                "set {} aside as {} (submodule clones, all pushed; git refuses removal while modules exists, and deletes the copy with the worktree)",
+                modules.display(),
+                aside.display()
             ),
         );
     }
-    Ok(())
+    Ok(Cleared {
+        worktree: wt.clone(),
+        modules: set_aside.then_some(modules),
+        gitfiles,
+        stranded,
+    })
 }
 
 /// `--no-optional-locks`: a plain `git status` refreshes the index when it can, and a
@@ -340,6 +472,89 @@ pub fn status(dir: &Path) -> Result<Vec<u8>, CannotTell> {
     .probe(dir)?;
     found.extend(hidden_edits(dir)?);
     Ok(found)
+}
+
+/// Gitlinks that differ from the commit HEAD records, staged or not, one line each naming
+/// the submodule and both commits. `status` passes `--ignore-submodules=all`, which hides
+/// these too, and the submodule checks look inside the submodule, where nothing is wrong
+/// when it sits at a pushed commit: so without this, nothing reported the pointer
+/// (worktree-keeper-jwv). `=dirty` reports a changed commit and leaves the content inside a
+/// submodule to the dirty-submodule check.
+fn pointer_changes(dir: &Path) -> Result<Vec<String>, CannotTell> {
+    let listing = Git::at(
+        dir,
+        [
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--untracked-files=no",
+            "--ignore-submodules=dirty",
+        ],
+    )
+    .probe(dir)?;
+    let mut moved = Vec::new();
+    let mut entries = records(&listing);
+    while let Some(entry) = entries.next() {
+        // A rename's record is followed by its original path, which is no entry.
+        if entry.starts_with(b"2 ") {
+            entries.next();
+        }
+        let Some(change) = PointerChange::parse(entry) else {
+            continue;
+        };
+        let now = if change.recorded == change.staged {
+            shown(&Git::at(&dir.join(change.path), ["rev-parse", "HEAD"]).probe(dir)?)
+        } else {
+            change.staged.to_owned()
+        };
+        moved.push(format!(
+            "submodule {} points at {} but {} is recorded",
+            change.path.display(),
+            short(&now),
+            short(change.recorded)
+        ));
+    }
+    Ok(moved)
+}
+
+/// A `status --porcelain=v2` entry whose submodule field says its commit changed.
+struct PointerChange<'a> {
+    path: &'a Path,
+    /// The commit HEAD records.
+    recorded: &'a str,
+    /// The commit the index records.
+    staged: &'a str,
+}
+
+impl<'a> PointerChange<'a> {
+    /// `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>` and `2 … <X><score> <path>`, where
+    /// `<sub>` is `S<c><m><u>` for a submodule. `<c>` is `C` only when the checked-out commit
+    /// differs from the index (measured on 2.56: a staged bump reads `S...`), so a staged one
+    /// shows as `<hH>` differing from `<hI>`.
+    fn parse(entry: &'a [u8]) -> Option<Self> {
+        let fields = if entry.starts_with(b"1 ") {
+            9
+        } else if entry.starts_with(b"2 ") {
+            10
+        } else {
+            return None;
+        };
+        let mut parts = entry.splitn(fields, |byte| *byte == b' ');
+        let sub = parts.nth(2)?;
+        let recorded = std::str::from_utf8(parts.nth(3)?).ok()?;
+        let staged = std::str::from_utf8(parts.next()?).ok()?;
+        let path = Path::new(OsStr::from_bytes(parts.last()?));
+        let unstaged = sub.get(1) == Some(&b'C');
+        if !sub.starts_with(b"S") || !(unstaged || recorded != staged) {
+            return None;
+        }
+        Some(Self {
+            path,
+            recorded,
+            staged,
+        })
+    }
 }
 
 /// Edits to files flagged skip-worktree or assume-unchanged, which `git status` does not
@@ -637,6 +852,31 @@ fn short(commit: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const A: &str = "1111111111111111111111111111111111111111";
+    const B: &str = "2222222222222222222222222222222222222222";
+
+    #[test]
+    fn a_staged_file_is_never_a_pointer_change_though_its_objects_differ() {
+        let entry = format!("1 M. N... 100644 100644 100644 {A} {B} file");
+        assert!(PointerChange::parse(entry.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn a_staged_submodule_bump_is_a_pointer_change_naming_both_commits() {
+        let entry = format!("1 M. S... 160000 160000 160000 {A} {B} lib/sub");
+        let change = PointerChange::parse(entry.as_bytes()).expect("a pointer change");
+        assert_eq!(
+            (change.path, change.recorded, change.staged),
+            (Path::new("lib/sub"), A, B)
+        );
+    }
+
+    #[test]
+    fn a_submodule_with_only_content_changed_is_no_pointer_change() {
+        let entry = format!("1 .M S.M. 160000 160000 160000 {A} {A} lib/sub");
+        assert!(PointerChange::parse(entry.as_bytes()).is_none());
+    }
 
     #[test]
     fn a_commit_is_shortened_to_twelve_characters_when_it_has_them() {

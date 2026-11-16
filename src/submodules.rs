@@ -18,15 +18,19 @@ pub struct Gitlink {
     pub commit: String,
 }
 
-/// Every git directory under `<gitdir>/modules`: populated submodules and
-/// deinitialised leftovers alike, nested ones included. A git directory is
-/// identified by its `objects` directory, which `logs/` and `refs/` never have,
-/// although they hold files called `HEAD` too.
+/// Where a guard sets `<gitdir>/modules` aside, to be deleted with the worktree.
+pub const SET_ASIDE: &str = "modules.aside";
+
+/// Every git directory under `<gitdir>/modules`, and under the copy a guard set aside:
+/// populated submodules and deinitialised leftovers alike, nested ones included. A git
+/// directory is identified by its `objects` directory, which `logs/` and `refs/` never
+/// have, although they hold files called `HEAD` too.
 pub fn module_gitdirs(gitdir: &Path) -> Result<Vec<PathBuf>, CannotTell> {
-    let modules = gitdir.join("modules");
     let mut found = Vec::new();
-    if paths::is_dir(&modules)? {
-        collect_gitdirs(&modules, &mut found)?;
+    for modules in [gitdir.join("modules"), gitdir.join(SET_ASIDE)] {
+        if paths::is_dir(&modules)? {
+            collect_gitdirs(&modules, &mut found)?;
+        }
     }
     found.sort();
     Ok(found)
