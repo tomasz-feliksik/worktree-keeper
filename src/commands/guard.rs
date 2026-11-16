@@ -199,6 +199,12 @@ pub fn assess(worktree: &LinkedWorktree, rules: Rules) -> Outcome<Clearance> {
         }
     }
 
+    // After the submodule checks: an unpushed submodule commit is a pointer change too, and
+    // its own refusal, which --force does not cover, is the one to report.
+    if rules.own_changes == OwnChanges::MustBeClean {
+        refuse_pointer_changes(wt)?;
+    }
+
     let top_level = live
         .into_iter()
         .filter(|sub| !nested_in(sub, &subs))
@@ -234,6 +240,24 @@ fn refuse_own_work(worktree: &LinkedWorktree) -> Outcome {
                 wt.display(),
                 wt.display(),
                 shown(&only_here)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// What `--force` accepts losing, besides `refuse_own_work`'s: a gitlink moved and not
+/// committed.
+fn refuse_pointer_changes(wt: &Path) -> Outcome {
+    let moved = pointer_changes(wt)?;
+    if !moved.is_empty() {
+        return Err(Stop::refused_as(
+            RefusalKind::SubmodulePointer,
+            format!(
+                "{} has an uncommitted submodule pointer change — commit the bump, or discard it with 'worktree remove --force {}':\n{}",
+                wt.display(),
+                wt.display(),
+                moved.join("\n")
             ),
         ));
     }
@@ -340,6 +364,89 @@ pub fn status(dir: &Path) -> Result<Vec<u8>, CannotTell> {
     .probe(dir)?;
     found.extend(hidden_edits(dir)?);
     Ok(found)
+}
+
+/// Gitlinks that differ from the commit HEAD records, staged or not, one line each naming
+/// the submodule and both commits. `status` passes `--ignore-submodules=all`, which hides
+/// these too, and the submodule checks look inside the submodule, where nothing is wrong
+/// when it sits at a pushed commit: so without this, nothing reported the pointer
+/// (worktree-keeper-jwv). `=dirty` reports a changed commit and leaves the content inside a
+/// submodule to the dirty-submodule check.
+fn pointer_changes(dir: &Path) -> Result<Vec<String>, CannotTell> {
+    let listing = Git::at(
+        dir,
+        [
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--untracked-files=no",
+            "--ignore-submodules=dirty",
+        ],
+    )
+    .probe(dir)?;
+    let mut moved = Vec::new();
+    let mut entries = records(&listing);
+    while let Some(entry) = entries.next() {
+        // A rename's record is followed by its original path, which is no entry.
+        if entry.starts_with(b"2 ") {
+            entries.next();
+        }
+        let Some(change) = PointerChange::parse(entry) else {
+            continue;
+        };
+        let now = if change.recorded == change.staged {
+            shown(&Git::at(&dir.join(change.path), ["rev-parse", "HEAD"]).probe(dir)?)
+        } else {
+            change.staged.to_owned()
+        };
+        moved.push(format!(
+            "submodule {} points at {} but {} is recorded",
+            change.path.display(),
+            short(&now),
+            short(change.recorded)
+        ));
+    }
+    Ok(moved)
+}
+
+/// A `status --porcelain=v2` entry whose submodule field says its commit changed.
+struct PointerChange<'a> {
+    path: &'a Path,
+    /// The commit HEAD records.
+    recorded: &'a str,
+    /// The commit the index records.
+    staged: &'a str,
+}
+
+impl<'a> PointerChange<'a> {
+    /// `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>` and `2 … <X><score> <path>`, where
+    /// `<sub>` is `S<c><m><u>` for a submodule. `<c>` is `C` only when the checked-out commit
+    /// differs from the index (measured on 2.56: a staged bump reads `S...`), so a staged one
+    /// shows as `<hH>` differing from `<hI>`.
+    fn parse(entry: &'a [u8]) -> Option<Self> {
+        let fields = if entry.starts_with(b"1 ") {
+            9
+        } else if entry.starts_with(b"2 ") {
+            10
+        } else {
+            return None;
+        };
+        let mut parts = entry.splitn(fields, |byte| *byte == b' ');
+        let sub = parts.nth(2)?;
+        let recorded = std::str::from_utf8(parts.nth(3)?).ok()?;
+        let staged = std::str::from_utf8(parts.next()?).ok()?;
+        let path = Path::new(OsStr::from_bytes(parts.last()?));
+        let unstaged = sub.get(1) == Some(&b'C');
+        if !sub.starts_with(b"S") || !(unstaged || recorded != staged) {
+            return None;
+        }
+        Some(Self {
+            path,
+            recorded,
+            staged,
+        })
+    }
 }
 
 /// Edits to files flagged skip-worktree or assume-unchanged, which `git status` does not

@@ -115,6 +115,11 @@ which is the only one left once main has retired the submodule. If no clone can 
 - `git status` does not look at a file flagged skip-worktree or assume-unchanged. The check compares them through a
   throwaway copy of the index with the flags cleared. Each flag takes its own `update-index` run: given both, it applies
   only the first it handles (measured on 2.56). A flagged file absent from disk is normal under a sparse checkout.
+- `--ignore-submodules=all` also hides a **submodule pointer** change: the submodule checked out, or staged, at a commit
+  other than the recorded one. Inside the submodule nothing is wrong when that commit is pushed, so the submodule checks
+  cannot see it either. A separate check reads `status --porcelain=v2 --ignore-submodules=dirty`, where `<c>` in
+  `S<c><m><u>` is `C` only for an unstaged change; a staged one shows as `<hH>` differing from `<hI>` (measured on
+  2.56). It is the worktree's own uncommitted change, so `--force` covers it.
 - `GIT_DIR` and `GIT_WORK_TREE` outrank `-C`. `pre-commit`, `post-commit` and `post-checkout` export `GIT_DIR`, and
   `git worktree add` exports both to its hooks (measured on 2.56). With `GIT_DIR` alone, git takes the current directory
   as the work tree, which looks right, but reports the other worktree's git directory, and so its clones. So `Git::new`
@@ -216,6 +221,8 @@ one on 2026-11-05, when the suite was still shell. It has kept their names, and 
 | `GIT_DIR` and `GIT_WORK_TREE` left in git's environment        | `leaked_git_dir_and_work_tree_cannot_redirect_to_another_worktree` |
 | `GIT_DIR` alone left in git's environment                      | `leaked_git_dir_alone_judges_the_clones_of_the_worktree_named`     |
 | `--untracked-files` not pinned                                 | `a_config_hiding_untracked_files_hides_nothing_from_the_check`     |
+| Pointer check passes `--ignore-submodules=all`                 | `an_unstaged_submodule_pointer_change_is_refused_until_forced`     |
+| A staged pointer change not compared, HEAD against index       | `a_staged_submodule_pointer_change_is_refused_until_forced`        |
 | A detached HEAD's own commits not refused                      | `a_commit_on_a_detached_head_is_refused_until_something_holds_it`  |
 | The detached query counts HEAD itself, with `--all`            | `a_commit_on_a_detached_head_is_refused_until_something_holds_it`  |
 | The detached query ignores tags or remotes                     | `a_detached_commit_a_tag_or_remote_holds_is_removable`             |

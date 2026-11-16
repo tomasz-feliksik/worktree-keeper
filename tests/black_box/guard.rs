@@ -604,3 +604,83 @@ fn guard_defaults_to_the_current_directory() {
         "guard cleared the worktree the variable named"
     );
 }
+
+/// Whether the pointer change is staged.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pointer {
+    Unstaged,
+    Staged,
+}
+
+// Points the worktree's submodule at a commit its remote has, without committing the bump:
+// the pointer is the only change, and nothing inside the submodule is dirty or unpushed.
+// What it must get: refused by check, status and remove with its own kind and both commits
+// named, with nothing changed; accepted under --force, because it is the worktree's own
+// uncommitted change and the commit it points at is pushed (worktree-keeper-jwv).
+fn pointer_change_is_refused_until_forced(pointer: Pointer) {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("ptr");
+    let seed = format!("{}/sub-seed", s.t);
+    s.commit_file(&seed, "later", "a later commit");
+    s.git(&seed, &["push", "-q", "origin", "main"]);
+    let sub = wt.file("sub");
+    s.git(&sub, &["fetch", "-q"]);
+    s.git(&sub, &["checkout", "-q", "origin/main"]);
+    if pointer == Pointer::Staged {
+        s.git(&wt.path, &["add", "sub"]);
+    }
+    let recorded = s.git(&wt.path, &["rev-parse", "HEAD:sub"]).trim()[..12].to_owned();
+    let checked_out = s.git(&sub, &["rev-parse", "HEAD"]).trim()[..12].to_owned();
+
+    let check = s.run(&["check", "--json", &wt.path]);
+    check.rc(1);
+    check.out_has("\"kind\": \"submodule_pointer\"");
+    check.out_has(&recorded);
+    check.out_has(&checked_out);
+    let status = s.run(&["status", "--json", &wt.path]);
+    status.out_has("\"kind\": \"submodule_pointer\"");
+    let remove = s.run(&["remove", &wt.path]);
+    remove.rc(1);
+    remove.err_has("submodule sub");
+    assert!(
+        is_dir(wt.git_file("modules/sub")),
+        "a refused remove cleared the submodule clones"
+    );
+    assert!(
+        s.git_ok(&sub, &["rev-parse", "--git-dir"]),
+        "a refused remove left the submodule unable to find its clone"
+    );
+    s.run(&["check", "--force", &wt.path]).rc(0);
+    s.run(&["remove", "--force", &wt.path]).rc(0);
+    assert!(!exists(&wt.path), "--force did not remove the worktree");
+}
+
+// The gitlink differs from the index and HEAD (worktree-keeper-jwv, step 1).
+#[test]
+fn an_unstaged_submodule_pointer_change_is_refused_until_forced() {
+    pointer_change_is_refused_until_forced(Pointer::Unstaged);
+}
+
+// The same change staged (step 2): staging a bump is not committing it.
+#[test]
+fn a_staged_submodule_pointer_change_is_refused_until_forced() {
+    pointer_change_is_refused_until_forced(Pointer::Staged);
+}
+
+// Content changed inside a submodule, at the recorded commit, is the submodule's own
+// dirtiness — refused under --force as before — and not a pointer change.
+#[test]
+fn content_inside_a_submodule_is_not_a_pointer_change() {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("ptr-content");
+    append(wt.file("sub/README"), "change\n");
+    write(wt.file("sub/untracked"), "scratch\n");
+    let check = s.run(&["check", "--json", "--force", &wt.path]);
+    check.rc(1);
+    check.out_has("\"kind\": \"dirty_submodule\"");
+    assert!(
+        !check.out.contains("submodule_pointer"),
+        "content inside a submodule reported as a pointer change: {}",
+        check.out
+    );
+}
