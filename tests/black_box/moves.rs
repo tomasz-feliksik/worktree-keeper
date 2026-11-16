@@ -130,6 +130,78 @@ fn move_carries_submodules_and_nested_submodules() {
     assert_eq!(kind_of(&after.out), refused_as);
 }
 
+/// The output lines that name `entry` as still holding the old path.
+fn stale_lines<'a>(out: &'a str, entry: &str) -> Vec<&'a str> {
+    out.lines()
+        .filter(|line| line.contains("still names the old path") && line.contains(entry))
+        .collect()
+}
+
+// AC10: what git ignores — a virtualenv, a build directory — can hold the old absolute path,
+// and break there silently. move names each such entry, with one file that holds it, and
+// changes none of them: it knows nothing of what made them, and fixing them is the caller's.
+#[test]
+fn move_names_ignored_entries_that_still_hold_the_old_path() {
+    let s = Sandbox::new();
+    let (main, old) = plain_project(&s);
+    append(
+        format!("{main}/.git/info/exclude"),
+        ".venv/\ncache/\nlink\n",
+    );
+    mkdir(format!("{old}/.venv/bin"));
+    write(format!("{old}/.venv/aaa"), "names nothing\n");
+    write(
+        format!("{old}/.venv/bin/tool"),
+        &format!("#!{old}/.venv/bin/python\n"),
+    );
+    mkdir(format!("{old}/cache"));
+    write(format!("{old}/cache/blob"), "names nothing\n");
+    std::os::unix::fs::symlink(format!("{old}/README"), format!("{old}/link")).unwrap();
+    let new = format!("{}/chosen/plain", s.t);
+
+    let moved = s.run(&["move", &old, &new]);
+
+    moved.rc(0);
+    let venv = stale_lines(&moved.out, ".venv/");
+    assert_eq!(venv.len(), 1, "{}", moved.out);
+    assert!(venv[0].contains(".venv/bin/tool"), "{}", venv[0]);
+    assert_eq!(stale_lines(&moved.out, "link").len(), 1, "{}", moved.out);
+    assert!(stale_lines(&moved.out, "cache").is_empty(), "{}", moved.out);
+    assert_eq!(
+        read(format!("{new}/.venv/bin/tool")),
+        format!("#!{old}/.venv/bin/python"),
+        "move changed an ignored file"
+    );
+    assert_intact_plain(&s, &main, &old, &new);
+}
+
+// AC10 inside a submodule: its ignored entries are its own, named from the worktree.
+#[test]
+fn move_names_a_submodules_ignored_entries_that_hold_the_old_path() {
+    let s = Sandbox::with_project();
+    let wt = s.worktree("built");
+    let sub = wt.file("sub");
+    let exclude = s.git(
+        &sub,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/exclude",
+        ],
+    );
+    append(exclude.trim(), "build/\n");
+    mkdir(format!("{sub}/build"));
+    write(format!("{sub}/build/out.d"), &format!("{sub}/src.c\n"));
+
+    let moved = s.run(&["move", &wt.path]);
+
+    moved.rc(0);
+    let lines = stale_lines(&moved.out, "sub/build/");
+    assert_eq!(lines.len(), 1, "{}", moved.out);
+    assert!(lines[0].contains("sub/build/out.d"), "{}", lines[0]);
+}
+
 // Moving the last worktree out of its place tidies the emptied directory, as remove does.
 #[test]
 fn move_out_of_its_place_tidies_the_empty_directory() {

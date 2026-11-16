@@ -125,7 +125,8 @@ worktree guard [--force] [--ignore-in-use] [path]     check, then clear metadata
 1. **A move changes nothing in the worktree, or says so.** It refuses, with nothing changed, a locked worktree, one a
    process is running in, and an existing destination. Afterwards it compares a snapshot of the worktree and each
    submodule with one taken before, and a difference, or a snapshot that cannot be taken, exits 3 naming both copies. It
-   does not move the worktree back.
+   does not move the worktree back. What git ignores and still names the old path, such as a virtualenv, it lists for
+   the caller to remake, and leaves alone.
 1. **`--help` and a mistyped option never act.** Nothing is created, and no branch is made.
 1. **A commit only a detached HEAD holds is work.** `remove` refuses it without `--force`, and `sweep` never prunes a
    stale registration over it.

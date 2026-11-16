@@ -232,6 +232,32 @@ fn move_json_names_from_and_to() {
 }
 
 #[test]
+fn move_json_lists_ignored_entries_that_hold_the_old_path() {
+    let repo = Repo::new("move-stale");
+    let old = repo.worktree().canonicalize().unwrap();
+    fs::write(repo.main().join(".git/info/exclude"), "out/\n").unwrap();
+    fs::create_dir(old.join("out")).unwrap();
+    fs::write(old.join("out/paths"), old.display().to_string()).unwrap();
+
+    let output = worktree(&["move", "--json"], &old);
+
+    let json = document(&output);
+    assert_eq!(output.status.code(), Some(0), "{json}");
+    assert_eq!(
+        json["moved"]["stale"],
+        serde_json::json!([{ "entry": "out/", "file": "out/paths" }])
+    );
+}
+
+#[test]
+fn move_json_names_no_stale_entry_when_none_holds_the_path() {
+    let repo = Repo::new("move-clean");
+    let output = worktree(&["move", "--json"], &repo.worktree());
+    let json = document(&output);
+    assert_eq!(json["moved"]["stale"], serde_json::json!([]), "{json}");
+}
+
+#[test]
 fn move_json_moved_is_null_when_already_placed() {
     let repo = Repo::new("move-placed");
     assert_eq!(worktree(&["move"], &repo.worktree()).status.code(), Some(0));

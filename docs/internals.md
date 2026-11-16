@@ -131,6 +131,13 @@ which is the only one left once main has retired the submodule. If no clone can 
 - A stale `core.worktree` makes `git -C <sub> status` exit 128 (cannot chdir), which is what the after-snapshot catches.
   A snapshot is the gate, not decoration: with the rewrite skipped, `move` exits 3 instead of 0.
 - A stranded submodule cannot be snapshotted, so `move` exits 3 before changing anything.
+- The snapshot reads only what git tracks, and ignored files can hold the old absolute path: a moved virtualenv's
+  `python` still runs, but every console script keeps a shebang to the old place and fails (measured with
+  `python -m venv`, 2026-11-16). So after verifying, `move` searches each ignored entry, in the worktree and each
+  populated submodule, for the old path's bytes, where the next byte does not continue a name, and reports each entry
+  that holds it with its first such file in name order. Symlinks are read, never followed. It changes nothing there and
+  knows no tool, and a file it cannot read exits 3. A directory that holds the path stops at its first hit; one that
+  does not is read whole, about 2 s for 640 MB.
 
 ### What can hide work from a check
 
@@ -278,6 +285,8 @@ one on 2026-11-05, when the suite was still shell. It has kept their names, and 
 | `move` skips the `core.worktree` rewrite                       | `move_carries_submodules_and_nested_submodules`                    |
 | `verify` passes a stale `core.worktree`                        | `verification_fails_when_a_core_worktree_is_left_stale`            |
 | `move` refuses after changing something                        | `move_refuses_with_nothing_changed`                                |
+| `move` skips the search of ignored entries                     | `move_names_ignored_entries_that_still_hold_the_old_path`          |
+| The search skips submodules                                    | `move_names_a_submodules_ignored_entries_that_hold_the_old_path`   |
 | Sweep moves a misplaced worktree                               | `sweep_lists_a_misplaced_worktree_and_never_moves_it`              |
 | A removal git refuses is not put back                          | `a_removal_git_refuses_after_clearing_puts_every_submodule_back`   |
 | Clones set aside are not scanned for unpushed commits          | `an_unpushed_commit_in_a_clone_set_aside_is_refused`               |

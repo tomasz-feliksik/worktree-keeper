@@ -10,6 +10,7 @@ mod outcome;
 mod paths;
 mod placement;
 mod say;
+mod stale;
 mod submodules;
 mod temp;
 #[cfg(test)]

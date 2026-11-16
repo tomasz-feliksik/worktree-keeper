@@ -106,12 +106,21 @@ many worktrees, so it does not change the exit status.
 ```json
 {
   "schema_version": 1,
-  "moved": { "from": "/home/me/code/worktrees/repo/feat-x", "to": "/home/me/code/repo.worktrees/feat-x" },
+  "moved": {
+    "from": "/home/me/code/worktrees/repo/feat-x",
+    "to": "/home/me/code/repo.worktrees/feat-x",
+    "stale": [{ "entry": ".venv/", "file": ".venv/bin/pytest" }]
+  },
   "reasons": []
 }
 ```
 
 A caller that follows a move with steps of its own, such as moving an agent's history, chains them on `moved`.
+
+`stale` lists what git ignores, in the worktree and its submodules, that still names the old absolute path: each entry
+as `git ls-files --others --ignored --directory` gives it, and the first file in it, by name, that holds the path. Both
+are relative to the new path. `move` changed none of them and knows nothing of what made them, so remaking them (a
+virtualenv, a build directory, a path-keyed approval) is the caller's step. An empty array means none does.
 
 | `moved`            | `reasons` | Exit | Means                                                                                                                                                          |
 | ------------------ | --------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |

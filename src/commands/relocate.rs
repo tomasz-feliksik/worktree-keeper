@@ -13,6 +13,10 @@
 //! out is forward: a snapshot taken before and after has to match, and a mismatch, or an
 //! after that cannot be taken, exits 3 and keeps both snapshots for a person to read. There
 //! is no rollback: undoing a move can fail the same way.
+//!
+//! The snapshot reads only what git tracks. What it ignores is searched afterwards for the
+//! old absolute path (`crate::stale`), and every entry still naming it is reported,
+//! unchanged: whatever made it has to make it again.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -29,15 +33,18 @@ use crate::outcome::{CannotTell, Outcome, RefusalKind, Stop};
 use crate::paths::{self, cannot_read};
 use crate::placement;
 use crate::say::{self, Sink, say};
+use crate::stale::{self, Stale};
 use crate::submodules;
 use crate::temp::TempDir;
 use crate::worktree::LinkedWorktree;
 
-/// Where a worktree was and where it is now.
+/// Where a worktree was and where it is now, and what git ignores there that still names
+/// where it was.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct Moved {
     from: String,
     to: String,
+    stale: Vec<Stale>,
 }
 
 /// See docs/json-schema.md before changing what this describes.
@@ -60,10 +67,21 @@ pub fn run(path: &Path, destination: Option<&Path>, format: Format) -> Outcome {
             })?;
         }
         Format::Text => match &answer {
-            Ok(Some(moved)) => say(
-                Sink::Stdout,
-                format_args!("moved {} to {}", moved.from, moved.to),
-            ),
+            Ok(Some(moved)) => {
+                say(
+                    Sink::Stdout,
+                    format_args!("moved {} to {}", moved.from, moved.to),
+                );
+                for stale in &moved.stale {
+                    say(
+                        Sink::Stdout,
+                        format_args!(
+                            "  {} still names the old path (in {}); move changed nothing in it, so remake it there",
+                            stale.entry, stale.file
+                        ),
+                    );
+                }
+            }
             Ok(None) => say(
                 Sink::Stdout,
                 format_args!("{} is already where it belongs", path.display()),
@@ -110,6 +128,12 @@ fn relocate(path: &Path, destination: Option<&Path>) -> Outcome<Option<Moved>> {
         .join(to.file_name().unwrap_or(OsStr::new("")));
     relocate_worktree(&worktree, &to)?;
     verify(&before, &to)?;
+    let stale = stale::entries_naming(&to, from).map_err(|cannot| {
+        CannotTell::new(format!(
+            "worktree: moved to {} and verified, but {cannot}",
+            to.display()
+        ))
+    })?;
     if let Ok(dir) = placement::dir_for(&worktree.common)
         && from.parent() == Some(dir.as_path())
     {
@@ -118,6 +142,7 @@ fn relocate(path: &Path, destination: Option<&Path>) -> Outcome<Option<Moved>> {
     Ok(Some(Moved {
         from: from.display().to_string(),
         to: to.display().to_string(),
+        stale,
     }))
 }
 
