@@ -6,6 +6,7 @@ pub mod create;
 pub mod guard;
 pub mod lock;
 pub mod provision;
+pub mod relocate;
 pub mod remove;
 pub mod seed;
 pub mod status;

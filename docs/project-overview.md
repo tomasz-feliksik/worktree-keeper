@@ -63,6 +63,7 @@ supervise agents (workmux and herdr today), rather than competing with them.
 | Occupancy lock         | Marks a worktree as taken, using `git worktree lock`                              | `lock`, `unlock` |
 | Removal guard          | Runs the checks, then clears stale submodule metadata                             | `guard`          |
 | Guarded removal        | Removes the worktree, deletes a merged branch, and optionally the remote one      | `remove`         |
+| Relocation             | Moves a worktree to its place, proven unchanged; `sweep` lists misplaced ones     | `move`, `sweep`  |
 | Leftover sweep         | Classifies folders as live, orphan, repo or leftover; deletes only with `--apply` | `sweep`          |
 | Exit contract          | 0 done, 1 refused, 2 usage, 3 could not check                                     | all              |
 
@@ -91,6 +92,7 @@ worktree actor [dir]
 worktree create <branch> [base]
 worktree provision [path]
 worktree remove [--force] [--ignore-in-use] [--keep-branch] [--delete-remote] <path>
+worktree move [--json] <path> [destination]       to <parent>/<repo>.worktrees/<name> by default
 worktree lock [--reason <text>] [path]     mark as occupied
 worktree unlock [path]                     release it
 
@@ -111,7 +113,8 @@ worktree guard [--force] [--ignore-in-use] [path]     check, then clear metadata
 1. **The guard never removes the worktree.**
 1. **Orphans are reported, never swept.** A `.git` file whose git directory is gone may sit beside work nothing else
    holds.
-1. **Sweep deletes nothing without `--apply`.**
+1. **Sweep deletes nothing without `--apply`, and never moves anything.** It lists a misplaced worktree with the
+   `worktree move` that fixes it: a caller may have steps of its own to take after a move.
 1. **Git's relative pointers resolve from the directory holding them**, never from the current directory. Getting this
    wrong once made `sweep --apply` unregister live worktrees.
 1. **`submodule deinit` is never run in a linked worktree.** Its configuration is shared, so it would de-register the
@@ -119,6 +122,11 @@ worktree guard [--force] [--ignore-in-use] [path]     check, then clear metadata
 1. **A remote branch is deleted last, and only on request.**
 1. **The default branch is never deleted.** A worktree can have it checked out; `remove` takes the worktree and keeps
    the branch, locally and on the remote, whatever the flags.
+1. **A move changes nothing in the worktree, or says so.** It refuses, with nothing changed, a locked worktree, one a
+   process is running in, and an existing destination. Afterwards it compares a snapshot of the worktree and each
+   submodule with one taken before, and a difference, or a snapshot that cannot be taken, exits 3 naming both copies. It
+   does not move the worktree back. What git ignores and still names the old path, such as a virtualenv, it lists for
+   the caller to remake, and leaves alone.
 1. **`--help` and a mistyped option never act.** Nothing is created, and no branch is made.
 1. **A commit only a detached HEAD holds is work.** `remove` refuses it without `--force`, and `sweep` never prunes a
    stale registration over it.

@@ -10,6 +10,7 @@ mod outcome;
 mod paths;
 mod placement;
 mod say;
+mod stale;
 mod submodules;
 mod temp;
 #[cfg(test)]
@@ -87,6 +88,13 @@ enum Command {
         delete_remote: bool,
         path: PathBuf,
     },
+    /// Move a worktree, submodules included, to <parent>/<repo>.worktrees/<name> or <destination>
+    Move {
+        #[arg(long)]
+        json: bool,
+        path: PathBuf,
+        destination: Option<PathBuf>,
+    },
     /// Mark a worktree as occupied, with git worktree lock
     Lock {
         #[arg(long)]
@@ -132,6 +140,11 @@ fn run(command: Command) -> Outcome {
             ignore_in_use,
             path,
         } => commands::guard::run(path, Rules::from_flags(force, ignore_in_use)),
+        Command::Move {
+            json,
+            path,
+            destination,
+        } => commands::relocate::run(&path, destination.as_deref(), format_of(json)),
         Command::Lock { reason, path } => commands::lock::lock(path, reason),
         Command::Unlock { path } => commands::lock::unlock(path),
         Command::Remove {

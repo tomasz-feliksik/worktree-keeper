@@ -17,6 +17,7 @@ mod default_branch;
 mod guard;
 mod help;
 mod lost_work;
+mod moves;
 mod provision;
 mod questions;
 mod seed;
